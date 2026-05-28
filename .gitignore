@@ -1,0 +1,32 @@
+# Vivado generated files
+.Xil/
+*.jou
+*.log
+*.str
+*.wdb
+*.vcd
+*.vpd
+*.fst
+*.pb
+*.rpt
+*.dcp
+*.bit
+*.ltx
+*.mcs
+*.prm
+
+# Vivado generated directories
+*.cache/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+*.gen/
+
+# Local/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+Desktop.ini

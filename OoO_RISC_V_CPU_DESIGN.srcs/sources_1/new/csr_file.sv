@@ -1,0 +1,114 @@
+module csr_file (
+    input  logic                          clk,
+    input  logic                          rst_n,
+
+    input  logic                          csr_en,
+    input  logic [1:0]                    csr_op,
+    input  logic [11:0]                   csr_addr,
+    input  logic [defines_pkg::WIDTH-1:0] csr_wdata,
+
+    input  logic                          trap_en,
+    input  logic [defines_pkg::WIDTH-1:0] trap_mepc,
+    input  logic [defines_pkg::WIDTH-1:0] trap_mcause,
+    input  logic [defines_pkg::WIDTH-1:0] trap_mtval,
+    input  logic                          mret_en,
+    input  logic                          software_irq_pending,
+    input  logic                          timer_irq_pending,
+    input  logic                          external_irq_pending,
+
+    output logic [defines_pkg::WIDTH-1:0] csr_rdata,
+    output logic [defines_pkg::WIDTH-1:0] mstatus_value,
+    output logic [defines_pkg::WIDTH-1:0] mie_value,
+    output logic [defines_pkg::WIDTH-1:0] mtvec_value,
+    output logic [defines_pkg::WIDTH-1:0] mepc_value
+);
+    import defines_pkg::*;
+
+    localparam int MSTATUS_MIE_BIT      = 3;
+    localparam int MSTATUS_MPIE_BIT     = 7;
+    localparam int MSTATUS_MPP_LSB      = 11;
+    localparam int MSTATUS_MPP_MSB      = 12;
+    localparam logic [1:0] PRV_M         = 2'b11;
+
+    logic [WIDTH-1:0] mstatus_q;
+    logic [WIDTH-1:0] mie_q;
+    logic [WIDTH-1:0] mtvec_q;
+    logic [WIDTH-1:0] mepc_q;
+    logic [WIDTH-1:0] mcause_q;
+    logic [WIDTH-1:0] mtval_q;
+    logic [WIDTH-1:0] mip_q;
+    logic [WIDTH-1:0] write_value;
+
+    assign mstatus_value = mstatus_q;
+    assign mie_value     = mie_q;
+    assign mtvec_value   = mtvec_q;
+    assign mepc_value    = mepc_q;
+
+    always_comb begin
+        unique case (csr_addr)
+            CSR_MSTATUS: csr_rdata = mstatus_q;
+            CSR_MIE:     csr_rdata = mie_q;
+            CSR_MTVEC:   csr_rdata = mtvec_q;
+            CSR_MEPC:    csr_rdata = mepc_q;
+            CSR_MCAUSE:  csr_rdata = mcause_q;
+            CSR_MTVAL:   csr_rdata = mtval_q;
+            CSR_MIP:     csr_rdata = mip_q;
+            default:     csr_rdata = '0;
+        endcase
+    end
+
+    always_comb begin
+        unique case (csr_op)
+            CSR_RW:  write_value = csr_wdata;
+            CSR_RS:  write_value = csr_rdata | csr_wdata;
+            CSR_RC:  write_value = csr_rdata & ~csr_wdata;
+            default: write_value = csr_rdata;
+        endcase
+    end
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            mstatus_q <= '0;
+            mie_q     <= '0;
+            mtvec_q   <= '0;
+            mepc_q    <= '0;
+            mcause_q  <= '0;
+            mtval_q   <= '0;
+            mip_q     <= '0;
+        end else begin
+            if (csr_en) begin
+                unique case (csr_addr)
+                    CSR_MSTATUS: mstatus_q <= write_value;
+                    CSR_MIE:     mie_q     <= write_value;
+                    CSR_MTVEC:   mtvec_q   <= write_value;
+                    CSR_MEPC:    mepc_q    <= write_value;
+                    CSR_MCAUSE:  mcause_q  <= write_value;
+                    CSR_MTVAL:   mtval_q   <= write_value;
+                    CSR_MIP:     mip_q     <= write_value;
+                    default: begin
+                    end
+                endcase
+            end
+
+            if (trap_en) begin
+                mepc_q   <= trap_mepc;
+                mcause_q <= trap_mcause;
+                mtval_q  <= trap_mtval;
+                mstatus_q[MSTATUS_MPIE_BIT] <= mstatus_q[MSTATUS_MIE_BIT];
+                mstatus_q[MSTATUS_MIE_BIT]  <= 1'b0;
+                mstatus_q[MSTATUS_MPP_MSB:MSTATUS_MPP_LSB] <= PRV_M;
+            end
+
+            if (mret_en) begin
+                mstatus_q[MSTATUS_MIE_BIT]  <= mstatus_q[MSTATUS_MPIE_BIT];
+                mstatus_q[MSTATUS_MPIE_BIT] <= 1'b1;
+                mstatus_q[MSTATUS_MPP_MSB:MSTATUS_MPP_LSB] <= 2'b00;
+            end
+
+            mip_q[3]  <= software_irq_pending;
+            mip_q[7]  <= timer_irq_pending;
+            mip_q[11] <= external_irq_pending;
+        end
+    end
+
+endmodule
