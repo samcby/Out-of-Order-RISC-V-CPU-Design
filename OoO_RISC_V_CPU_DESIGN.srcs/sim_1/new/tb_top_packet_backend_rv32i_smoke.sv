@@ -1,6 +1,6 @@
 `timescale 1ns/1ps
 
-module tb_top_rv32i_smoke;
+module tb_top_packet_backend_rv32i_smoke;
 
     import defines_pkg::*;
 
@@ -28,19 +28,22 @@ module tb_top_rv32i_smoke;
     logic [31:0] store_word_way0;
     logic [31:0] store_word_way1;
 
-    top dut (
-        .clk              (clk),
-        .rst_n            (rst_n),
-        .load_en          (load_en),
-        .load_addr        (load_addr),
-        .load_instr_byte  (load_instr_byte),
-        .issue_valid      (issue_valid),
-        .issue_fu_type    (issue_fu_type),
-        .issue_pc         (issue_pc),
-        .issue_imm        (issue_imm),
-        .rob_head_valid   (rob_head_valid),
+    top_packet_backend dut (
+        .clk(clk),
+        .rst_n(rst_n),
+        .software_irq(1'b0),
+        .timer_irq(1'b0),
+        .external_irq(1'b0),
+        .load_en(load_en),
+        .load_addr(load_addr),
+        .load_instr_byte(load_instr_byte),
+        .issue_valid(issue_valid),
+        .issue_fu_type(issue_fu_type),
+        .issue_pc(issue_pc),
+        .issue_imm(issue_imm),
+        .rob_head_valid(rob_head_valid),
         .rob_head_complete(rob_head_complete),
-        .rob_head_rd      (rob_head_rd)
+        .rob_head_rd(rob_head_rd)
     );
 
     initial clk = 1'b0;
@@ -99,11 +102,8 @@ module tb_top_rv32i_smoke;
         rst_n = 1'b1;
         step_clk;
 
-        // Preload a data word for load-variant checks. Store/load ordering is
-        // intentionally left for the later LSQ/store-buffer stage.
         dut.u_execution.u_lsu.u_data_cache.u_data_memory.mem[0] = 32'h0154ff55;
 
-        // Directed RV32I smoke program for newly completed integer/load-store ops.
         write_word(32'd0,   32'h000100b7); // lui   x1,0x10
         write_word(32'd4,   32'h00408b93); // addi  x23,x1,4
         write_word(32'd8,   32'hfff00113); // addi  x2,x0,-1
@@ -138,12 +138,12 @@ module tb_top_rv32i_smoke;
         load_addr = '0;
         load_instr_byte = '0;
 
-        repeat (350) step_clk;
+        repeat (450) step_clk;
 
-        a0_preg  = dut.u_rename.u_rat.rat[10];
-        a1_preg  = dut.u_rename.u_rat.rat[11];
-        a0_value = dut.u_prf.regs[a0_preg];
-        a1_value = dut.u_prf.regs[a1_preg];
+        a0_preg  = dut.u_rename_packet.u_rat_2w.rat[10];
+        a1_preg  = dut.u_rename_packet.u_rat_2w.rat[11];
+        a0_value = dut.u_prf_2w.regs[a0_preg];
+        a1_value = dut.u_prf_2w.regs[a1_preg];
         store_word_way0 = dut.u_execution.u_lsu.u_data_cache.line_data[0][0][1];
         store_word_way1 = dut.u_execution.u_lsu.u_data_cache.line_data[0][1][1];
 
@@ -152,19 +152,22 @@ module tb_top_rv32i_smoke;
                  a1_preg, $signed(a1_value), a1_value,
                  store_word_way0,
                  store_word_way1,
-                 dut.u_dispatch.u_rob.empty);
+                 dut.u_dispatch_packet.u_rob_2w.empty);
 
-        check_ok(dut.u_dispatch.u_rob.empty == 1'b1, "ROB drained after RV32I smoke program");
-        check_ok(a0_value == 32'h000000aa, "RV32I smoke a0(x10) matches expected 0xaa");
-        check_ok(a1_value == 32'h00001000, "RV32I smoke a1(x11) matches expected 0x1000");
+        check_ok(dut.u_dispatch_packet.u_rob_2w.empty == 1'b1,
+                 "packet backend ROB drained after RV32I smoke program");
+        check_ok(a0_value == 32'h000000aa,
+                 "packet backend RV32I smoke a0(x10) matches expected 0xaa");
+        check_ok(a1_value == 32'h00001000,
+                 "packet backend RV32I smoke a1(x11) matches expected 0x1000");
         check_ok((store_word_way0 == 32'h01540055) ||
                  (store_word_way1 == 32'h01540055),
-                 "RV32I smoke cached sb/sh store word matches expected 0x01540055");
+                 "packet backend cached sb/sh store word matches expected 0x01540055");
 
         if (fail_count == 0) begin
-            $display("==== tb_top_rv32i_smoke PASS ====");
+            $display("==== tb_top_packet_backend_rv32i_smoke PASS ====");
         end else begin
-            $display("==== tb_top_rv32i_smoke FAIL (%0d errors) ====", fail_count);
+            $display("==== tb_top_packet_backend_rv32i_smoke FAIL (%0d errors) ====", fail_count);
         end
 
         $finish;

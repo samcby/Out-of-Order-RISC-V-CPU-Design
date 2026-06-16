@@ -1,10 +1,14 @@
 module rs #(
     parameter type T = defines_pkg::alu_rs_t,
-    parameter logic [1:0] OPERATION = defines_pkg::FU_ALU
+    parameter logic [1:0] OPERATION = defines_pkg::FU_ALU,
+    parameter bit SINGLE_ENTRY = 1'b0
 )(
     input  logic                           wb_valid,
     input  defines_pkg::preg_t             wb_preg,
     input  logic [defines_pkg::WIDTH-1:0]  wb_result,
+    input  logic                           wb1_valid,
+    input  defines_pkg::preg_t             wb1_preg,
+    input  logic [defines_pkg::WIDTH-1:0]  wb1_result,
 
     input  logic [1:0]                     fu_sel,
 
@@ -27,6 +31,7 @@ module rs #(
 
     logic free_valid;
     logic ready_valid;
+    logic any_used;
 
     logic [$clog2(RS_DEPTH)-1:0] free_idx;
     logic [$clog2(RS_DEPTH)-1:0] issue_idx;
@@ -55,9 +60,16 @@ module rs #(
         .idx  (issue_idx)
     );
 
-    assign in_if.ready  = free_valid;
     assign out_if.valid = ready_valid;
     assign out_if.data  = ready_valid ? entries[issue_idx] : '0;
+    assign in_if.ready  = SINGLE_ENTRY ? !any_used : free_valid;
+
+    always_comb begin
+        any_used = 1'b0;
+        for (int i = 0; i < RS_DEPTH; i++) begin
+            any_used = any_used || used[i];
+        end
+    end
 
     always_comb begin
         enqueue_entry = in_if.data;
@@ -75,6 +87,20 @@ module rs #(
                 enqueue_entry.datapath.src_reg_2p == wb_preg) begin
                 enqueue_entry.src2_ready = 1'b1;
                 enqueue_entry.datapath.src2_value = wb_result;
+            end
+        end
+
+        if (wb1_valid) begin
+            if (!enqueue_entry.src1_ready &&
+                enqueue_entry.datapath.src_reg_1p == wb1_preg) begin
+                enqueue_entry.src1_ready = 1'b1;
+                enqueue_entry.datapath.src1_value = wb1_result;
+            end
+
+            if (!enqueue_entry.src2_ready &&
+                enqueue_entry.datapath.src_reg_2p == wb1_preg) begin
+                enqueue_entry.src2_ready = 1'b1;
+                enqueue_entry.datapath.src2_value = wb1_result;
             end
         end
     end
@@ -126,7 +152,25 @@ module rs #(
                 end
             end
 
-            if (out_if.valid && out_if.ready && fu_sel == OPERATION) begin
+            if (wb1_valid) begin
+                for (int i = 0; i < RS_DEPTH; i++) begin
+                    if (used[i]) begin
+                        if (!entries[i].src1_ready &&
+                            entries[i].datapath.src_reg_1p == wb1_preg) begin
+                            entries[i].src1_ready <= 1'b1;
+                            entries[i].datapath.src1_value <= wb1_result;
+                        end
+
+                        if (!entries[i].src2_ready &&
+                            entries[i].datapath.src_reg_2p == wb1_preg) begin
+                            entries[i].src2_ready <= 1'b1;
+                            entries[i].datapath.src2_value <= wb1_result;
+                        end
+                    end
+                end
+            end
+
+            if (out_if.valid && out_if.ready) begin
                 used[issue_idx] <= 1'b0;
             end
         end

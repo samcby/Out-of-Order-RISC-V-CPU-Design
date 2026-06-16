@@ -49,14 +49,15 @@ module dispatch_stage (
     rob_tag_t csr_pending_tag_q;
     cp_mask_t csr_pending_mask_q;
     logic csr_dispatch_fire;
-    logic csr_complete_fire;
+    logic csr_commit_fire;
 
     assign csr_dispatch_fire = alu_in_if.valid && alu_in_if.ready &&
                                (alu_in_if.data.control_signal.csr_en ||
                                 alu_in_if.data.control_signal.sys_en);
-    assign csr_complete_fire = csr_pending_q &&
-                               complete_valid &&
-                               (complete_tag == csr_pending_tag_q);
+    assign csr_commit_fire = csr_pending_q &&
+                             commit_en &&
+                             rob_head_valid &&
+                             (rob_head.datapath.rob_tag == csr_pending_tag_q);
 
     dispatch_logic u_dispatch_logic (
         .in_if         (in_if),
@@ -80,6 +81,9 @@ module dispatch_stage (
         .wb_valid (wb_valid),
         .wb_preg  (wb_preg),
         .wb_result(wb_result),
+        .wb1_valid(1'b0),
+        .wb1_preg ('0),
+        .wb1_result('0),
         .fu_sel   (fu_sel),
         .flush    (flush),        
         .squash_en(squash_en),
@@ -92,11 +96,15 @@ module dispatch_stage (
 
     rs #(
         .T(lsu_rs_t),
-        .OPERATION(FU_MEM)
+        .OPERATION(FU_MEM),
+        .SINGLE_ENTRY(1'b1)
     ) u_rs_lsu (
         .wb_valid (wb_valid),
         .wb_preg  (wb_preg),
         .wb_result(wb_result),
+        .wb1_valid(1'b0),
+        .wb1_preg ('0),
+        .wb1_result('0),
         .fu_sel   (fu_sel),
         .flush    (flush), 
         .squash_en(squash_en),
@@ -114,6 +122,9 @@ module dispatch_stage (
         .wb_valid (wb_valid),
         .wb_preg  (wb_preg),
         .wb_result(wb_result),
+        .wb1_valid(1'b0),
+        .wb1_preg ('0),
+        .wb1_result('0),
         .fu_sel   (fu_sel),
         .flush    (flush), 
         .squash_en(squash_en),
@@ -163,7 +174,7 @@ module dispatch_stage (
                 csr_pending_q <= 1'b0;
                 csr_pending_tag_q <= '0;
                 csr_pending_mask_q <= '0;
-            end else if (csr_complete_fire) begin
+            end else if (csr_commit_fire) begin
                 csr_pending_q <= 1'b0;
                 csr_pending_tag_q <= '0;
                 csr_pending_mask_q <= '0;

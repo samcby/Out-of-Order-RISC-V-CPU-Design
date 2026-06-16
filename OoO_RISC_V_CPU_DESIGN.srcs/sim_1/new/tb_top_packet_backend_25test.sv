@@ -1,12 +1,14 @@
 `timescale 1ns/1ps
 
-module tb_trace_25test;
+module tb_top_packet_backend_25test;
 
     import defines_pkg::*;
 
     localparam bit TRACE_VERBOSE = 1'b0;
+    localparam bit TRACE_BRANCH = 1'b0;
     localparam int MAX_RUNTIME_CYCLES = 4000;
     localparam int POST_MATCH_DRAIN_CYCLES = 256;
+    localparam int DEBUG_BR_RESOLVE_LAT = 4;
 
     logic clk;
     logic rst_n;
@@ -34,9 +36,6 @@ module tb_trace_25test;
     logic [31:0] a0_value;
     logic [31:0] a1_value;
     logic [31:0] x8_value;
-    logic [31:0] mem_word_12;
-    logic [31:0] mem_word_16;
-    logic [31:0] mem_word_20;
     logic pass_seen;
     int pass_commit_count;
     logic [31:0] pass_a0_value;
@@ -62,19 +61,22 @@ module tb_trace_25test;
     logic bp_update_is_jalr_q;
     logic [31:0] bp_update_target_q;
 
-    top dut (
-        .clk              (clk),
-        .rst_n            (rst_n),
-        .load_en          (load_en),
-        .load_addr        (load_addr),
-        .load_instr_byte  (load_instr_byte),
-        .issue_valid      (issue_valid),
-        .issue_fu_type    (issue_fu_type),
-        .issue_pc         (issue_pc),
-        .issue_imm        (issue_imm),
-        .rob_head_valid   (rob_head_valid),
+    top_packet_backend dut (
+        .clk(clk),
+        .rst_n(rst_n),
+        .software_irq(1'b0),
+        .timer_irq(1'b0),
+        .external_irq(1'b0),
+        .load_en(load_en),
+        .load_addr(load_addr),
+        .load_instr_byte(load_instr_byte),
+        .issue_valid(issue_valid),
+        .issue_fu_type(issue_fu_type),
+        .issue_pc(issue_pc),
+        .issue_imm(issue_imm),
+        .rob_head_valid(rob_head_valid),
         .rob_head_complete(rob_head_complete),
-        .rob_head_rd      (rob_head_rd)
+        .rob_head_rd(rob_head_rd)
     );
 
     initial clk = 1'b0;
@@ -181,23 +183,38 @@ module tb_trace_25test;
                      bp_update_target_q);
         end
 
+        if (TRACE_BRANCH && rst_n && branch_complete_valid_q) begin
+            $display("[BRC_TRACE] commit_count=%0d tag=%0d resolve=%0b cp_id=%0d pc_src=%0b pc_branch=%08h bp_pc=%08h bp_taken=%0b bp_jalr=%0b bp_target=%08h active_cp=%b",
+                     commit_count,
+                     branch_complete_tag_q,
+                     branch_resolve_q,
+                     resolve_checkpoint_id_q,
+                     pc_src_q,
+                     pc_branch_q,
+                     bp_update_pc_q,
+                     bp_update_taken_q,
+                     bp_update_is_jalr_q,
+                     bp_update_target_q,
+                     dut.active_checkpoint_mask_q);
+        end
+
         if (rst_n && !pass_seen) begin
             preg_t a0_preg_now;
             preg_t a1_preg_now;
             logic [31:0] a0_value_now;
             logic [31:0] a1_value_now;
 
-            a0_preg_now  = dut.u_rename.u_rat.rat[10];
-            a1_preg_now  = dut.u_rename.u_rat.rat[11];
-            a0_value_now = dut.u_prf.regs[a0_preg_now];
-            a1_value_now = dut.u_prf.regs[a1_preg_now];
+            a0_preg_now  = dut.u_rename_packet.u_rat_2w.rat[10];
+            a1_preg_now  = dut.u_rename_packet.u_rat_2w.rat[11];
+            a0_value_now = dut.u_prf_2w.regs[a0_preg_now];
+            a1_value_now = dut.u_prf_2w.regs[a1_preg_now];
 
             if (a0_value_now == 32'h00000003 && a1_value_now == 32'h00000001) begin
                 pass_seen         = 1'b1;
                 pass_commit_count = commit_count;
                 pass_a0_value     = a0_value_now;
                 pass_a1_value     = a1_value_now;
-                $display("[MATCH] observed expected architectural state at commit_count=%0d a0=%08h a1=%08h",
+                $display("[MATCH] packet backend observed expected architectural state at commit_count=%0d a0=%08h a1=%08h",
                          commit_count, a0_value_now, a1_value_now);
             end
         end
@@ -241,7 +258,6 @@ module tb_trace_25test;
         rst_n = 1'b1;
         step_clk;
 
-        // 25test.txt
         write_word(32'd0,   32'h00010437);
         write_word(32'd4,   32'h04040413);
         write_word(32'd8,   32'h000204B7);
@@ -330,28 +346,25 @@ module tb_trace_25test;
 
         if (pass_seen) begin
             for (int cycle = 0; cycle < POST_MATCH_DRAIN_CYCLES; cycle++) begin
-                if (dut.u_dispatch.u_rob.empty) begin
+                if (dut.u_dispatch_packet.u_rob_2w.empty) begin
                     break;
                 end
                 step_clk;
             end
         end
 
-        a0_preg  = dut.u_rename.u_rat.rat[10];
-        a1_preg  = dut.u_rename.u_rat.rat[11];
-        x8_preg  = dut.u_rename.u_rat.rat[8];
-        a0_value = dut.u_prf.regs[a0_preg];
-        a1_value = dut.u_prf.regs[a1_preg];
-        x8_value = dut.u_prf.regs[x8_preg];
-        mem_word_12 = dut.u_execution.u_lsu.u_data_cache.u_data_memory.mem[(x8_value + 32'd12) >> 2];
-        mem_word_16 = dut.u_execution.u_lsu.u_data_cache.u_data_memory.mem[(x8_value + 32'd16) >> 2];
-        mem_word_20 = dut.u_execution.u_lsu.u_data_cache.u_data_memory.mem[(x8_value + 32'd20) >> 2];
+        a0_preg  = dut.u_rename_packet.u_rat_2w.rat[10];
+        a1_preg  = dut.u_rename_packet.u_rat_2w.rat[11];
+        x8_preg  = dut.u_rename_packet.u_rat_2w.rat[8];
+        a0_value = dut.u_prf_2w.regs[a0_preg];
+        a1_value = dut.u_prf_2w.regs[a1_preg];
+        x8_value = dut.u_prf_2w.regs[x8_preg];
 
         $display("[SUMMARY] issue_count=%0d wb_count=%0d commit_count=%0d a0_preg=%0d a0=%0d (0x%08h) a1_preg=%0d a1=%0d (0x%08h) rob_empty=%0b rob_head_valid=%0b rob_head_complete=%0b rob_head_rd=%0d",
                  issue_count, wb_count, commit_count,
                  a0_preg, $signed(a0_value), a0_value,
                  a1_preg, $signed(a1_value), a1_value,
-                 dut.u_dispatch.u_rob.empty,
+                 dut.u_dispatch_packet.u_rob_2w.empty,
                  dut.rob_head_valid, dut.rob_head_complete, dut.rob_head_rd);
 
         $display("[STATE] active_cp_mask=%b fetch_pc=%08h lane0_instr=%08h lane1_instr=%08h lane1_valid=%0b head_q=%0d tail_q=%0d count_q=%0d",
@@ -360,36 +373,116 @@ module tb_trace_25test;
                  dut.u_fetch.lane0_instr,
                  dut.u_fetch.lane1_instr,
                  dut.u_fetch.lane1_valid,
-                 dut.u_dispatch.u_rob.head_q,
-                 dut.u_dispatch.u_rob.tail_q,
-                 dut.u_dispatch.u_rob.count_q);
+                 dut.u_dispatch_packet.u_rob_2w.head_q,
+                 dut.u_dispatch_packet.u_rob_2w.tail_q,
+                 dut.u_dispatch_packet.u_rob_2w.count_q);
 
-        $display("[DATA] x8_preg=%0d x8=%08h mem12=%08h mem16=%08h mem20=%08h",
-                 x8_preg, x8_value, mem_word_12, mem_word_16, mem_word_20);
+        $display("[DATA] x8_preg=%0d x8=%08h", x8_preg, x8_value);
         $display("[MATCH_STATE] seen=%0b commit_count=%0d a0=%08h a1=%08h",
                  pass_seen, pass_commit_count, pass_a0_value, pass_a1_value);
 
-        for (int i = 0; i < ROB_DEPTH; i++) begin
-            if (dut.u_dispatch.u_rob.valid_bits[i]) begin
-                $display("[ROB] idx=%0d complete=%0b tag=%0d rd=x%0d new_p=%0d old_p=%0d cp_id=%0d spec_mask=%b result=%08h",
+        if (!pass_seen) begin
+            $display("[ISSUE0] valid=%0b ready=%0b fu=%0d pc=%08h instr=%08h tag=%0d src1p=%0d src1_ready=%0b src1=%08h src2p=%0d src2_ready=%0b src2=%08h cp_id=%0d spec=%b",
+                     dut.issue_if.valid,
+                     dut.issue_if.ready,
+                     dut.issue_if.data.fu_sel,
+                     dut.issue_if.data.datapath.pc,
+                     dut.issue_if.data.datapath.instr,
+                     dut.issue_if.data.datapath.rob_tag,
+                     dut.issue_if.data.datapath.src_reg_1p,
+                     dut.issue_if.data.datapath.src_reg_1p == '0 ? 1'b1 :
+                         dut.u_prf_2w.ready_bits[dut.issue_if.data.datapath.src_reg_1p],
+                     dut.issue_if.data.datapath.src1_value,
+                     dut.issue_if.data.datapath.src_reg_2p,
+                     dut.issue_if.data.datapath.src_reg_2p == '0 ? 1'b1 :
+                         dut.u_prf_2w.ready_bits[dut.issue_if.data.datapath.src_reg_2p],
+                     dut.issue_if.data.datapath.src2_value,
+                     dut.issue_if.data.datapath.checkpoint_id,
+                     dut.issue_if.data.datapath.speculation_mask);
+
+            $display("[ISSUE1] valid=%0b ready=%0b fu=%0d pc=%08h instr=%08h tag=%0d src1p=%0d src1_ready=%0b src1=%08h src2p=%0d src2_ready=%0b src2=%08h cp_id=%0d spec=%b",
+                     dut.issue1_if.valid,
+                     dut.issue1_if.ready,
+                     dut.issue1_if.data.fu_sel,
+                     dut.issue1_if.data.datapath.pc,
+                     dut.issue1_if.data.datapath.instr,
+                     dut.issue1_if.data.datapath.rob_tag,
+                     dut.issue1_if.data.datapath.src_reg_1p,
+                     dut.issue1_if.data.datapath.src_reg_1p == '0 ? 1'b1 :
+                         dut.u_prf_2w.ready_bits[dut.issue1_if.data.datapath.src_reg_1p],
+                     dut.issue1_if.data.datapath.src1_value,
+                     dut.issue1_if.data.datapath.src_reg_2p,
+                     dut.issue1_if.data.datapath.src_reg_2p == '0 ? 1'b1 :
+                         dut.u_prf_2w.ready_bits[dut.issue1_if.data.datapath.src_reg_2p],
+                     dut.issue1_if.data.datapath.src2_value,
+                     dut.issue1_if.data.datapath.checkpoint_id,
+                     dut.issue1_if.data.datapath.speculation_mask);
+
+            $display("[BR_COMPLETE] valid=%0b tag=%0d resolve=%0b pc_src=%0b pc_branch=%08h cp_id=%0d",
+                     dut.branch_complete_valid,
+                     dut.branch_complete_tag,
+                     dut.branch_resolve_exe,
+                     dut.pc_src_exe,
+                     dut.pc_branch_exe,
+                     dut.resolve_checkpoint_id_exe);
+
+            for (int i = 0; i < DEBUG_BR_RESOLVE_LAT; i++) begin
+                $display("[BR_PIPE] stage=%0d valid=%0b tag=%0d cp_id=%0d spec=%b pc_src=%0b target=%08h bp_pc=%08h bp_taken=%0b bp_jalr=%0b",
                          i,
-                         dut.u_dispatch.u_rob.entries[i].datapath.complete,
-                         dut.u_dispatch.u_rob.entries[i].datapath.rob_tag,
-                         dut.u_dispatch.u_rob.entries[i].datapath.rd,
-                         dut.u_dispatch.u_rob.entries[i].datapath.new_des_preg,
-                         dut.u_dispatch.u_rob.entries[i].datapath.old_des_preg,
-                         dut.u_dispatch.u_rob.entries[i].datapath.checkpoint_id,
-                         dut.u_dispatch.u_rob.entries[i].datapath.speculation_mask,
-                         dut.u_dispatch.u_rob.entries[i].datapath.result);
+                         dut.u_execution.br_pipe_valid[i],
+                         dut.u_execution.br_pipe_tag[i],
+                         dut.u_execution.br_pipe_cp_id[i],
+                         dut.u_execution.br_pipe_spec_mask[i],
+                         dut.u_execution.br_pipe_pc_src[i],
+                         dut.u_execution.br_pipe_pc_branch[i],
+                         dut.u_execution.br_pipe_bp_pc[i],
+                         dut.u_execution.br_pipe_bp_taken[i],
+                         dut.u_execution.br_pipe_bp_is_jalr[i]);
+            end
+
+            for (int i = 0; i < RS_DEPTH; i++) begin
+                if (dut.u_dispatch_packet.u_rs_branch.used[i]) begin
+                    $display("[BR_RS] idx=%0d pc=%08h instr=%08h tag=%0d src1p=%0d src1_ready=%0b src1=%08h src2p=%0d src2_ready=%0b src2=%08h cp_id=%0d spec=%b jump=%0b jalr=%0b branch=%0b",
+                             i,
+                             dut.u_dispatch_packet.u_rs_branch.entries[i].datapath.pc,
+                             dut.u_dispatch_packet.u_rs_branch.entries[i].datapath.instr,
+                             dut.u_dispatch_packet.u_rs_branch.entries[i].datapath.rob_tag,
+                             dut.u_dispatch_packet.u_rs_branch.entries[i].datapath.src_reg_1p,
+                             dut.u_dispatch_packet.u_rs_branch.entries[i].src1_ready,
+                             dut.u_dispatch_packet.u_rs_branch.entries[i].datapath.src1_value,
+                             dut.u_dispatch_packet.u_rs_branch.entries[i].datapath.src_reg_2p,
+                             dut.u_dispatch_packet.u_rs_branch.entries[i].src2_ready,
+                             dut.u_dispatch_packet.u_rs_branch.entries[i].datapath.src2_value,
+                             dut.u_dispatch_packet.u_rs_branch.entries[i].datapath.checkpoint_id,
+                             dut.u_dispatch_packet.u_rs_branch.entries[i].datapath.speculation_mask,
+                             dut.u_dispatch_packet.u_rs_branch.entries[i].control_signal.jump,
+                             dut.u_dispatch_packet.u_rs_branch.entries[i].control_signal.jump_reg,
+                             dut.u_dispatch_packet.u_rs_branch.entries[i].control_signal.branch);
+                end
+            end
+
+            for (int i = 0; i < ROB_DEPTH; i++) begin
+                if (dut.u_dispatch_packet.u_rob_2w.valid_bits[i]) begin
+                    $display("[ROB] idx=%0d complete=%0b tag=%0d rd=x%0d new_p=%0d old_p=%0d cp_id=%0d spec_mask=%b result=%08h",
+                             i,
+                             dut.u_dispatch_packet.u_rob_2w.entries[i].datapath.complete,
+                             dut.u_dispatch_packet.u_rob_2w.entries[i].datapath.rob_tag,
+                             dut.u_dispatch_packet.u_rob_2w.entries[i].datapath.rd,
+                             dut.u_dispatch_packet.u_rob_2w.entries[i].datapath.new_des_preg,
+                             dut.u_dispatch_packet.u_rob_2w.entries[i].datapath.old_des_preg,
+                             dut.u_dispatch_packet.u_rob_2w.entries[i].datapath.checkpoint_id,
+                             dut.u_dispatch_packet.u_rob_2w.entries[i].datapath.speculation_mask,
+                             dut.u_dispatch_packet.u_rob_2w.entries[i].datapath.result);
+                end
             end
         end
 
-        check_ok(pass_seen, "25test observed expected a0(x10)=3 and a1(x11)=1 during execution");
+        check_ok(pass_seen, "packet backend 25test observed expected a0(x10)=3 and a1(x11)=1 during execution");
 
         if (fail_count == 0) begin
-            $display("==== tb_trace_25test PASS ====");
+            $display("==== tb_top_packet_backend_25test PASS ====");
         end else begin
-            $display("==== tb_trace_25test FAIL (%0d errors) ====", fail_count);
+            $display("==== tb_top_packet_backend_25test FAIL (%0d errors) ====", fail_count);
         end
 
         $finish;

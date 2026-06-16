@@ -21,6 +21,7 @@ package defines_pkg;
     parameter int RS_DEPTH = 8;
     parameter int CHECKPOINT_NUM = 4;
     parameter int CHECKPOINT_W   = $clog2(CHECKPOINT_NUM);
+    parameter int ISSUE_WIDTH = 2;
 
     parameter logic [3:0] ALU_ADD  = 4'd0;
     parameter logic [3:0] ALU_SUB  = 4'd1;
@@ -202,6 +203,36 @@ package defines_pkg;
         rs_t  rs_entry;
         rob_t rob_entry;
     } rat_dis_t;
+
+    typedef struct packed {
+        logic          valid;
+        fetch_decode_t data;
+    } fetch_decode_lane_t;
+
+    typedef struct packed {
+        fetch_decode_lane_t lane0;
+        fetch_decode_lane_t lane1;
+    } fetch_decode_packet_t;
+
+    typedef struct packed {
+        logic        valid;
+        decode_rat_t data;
+    } decode_rat_lane_t;
+
+    typedef struct packed {
+        decode_rat_lane_t lane0;
+        decode_rat_lane_t lane1;
+    } decode_rat_packet_t;
+
+    typedef struct packed {
+        logic     valid;
+        rat_dis_t data;
+    } rat_dis_lane_t;
+
+    typedef struct packed {
+        rat_dis_lane_t lane0;
+        rat_dis_lane_t lane1;
+    } rat_dis_packet_t;
 
     typedef struct packed {
         alu_control_t    alu;

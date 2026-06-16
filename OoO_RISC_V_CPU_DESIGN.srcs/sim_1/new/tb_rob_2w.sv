@@ -1,0 +1,212 @@
+`timescale 1ns/1ps
+
+module tb_rob_2w;
+
+    import defines_pkg::*;
+
+    logic clk;
+    logic rst_n;
+    logic complete_en0;
+    logic complete_en1;
+    logic complete_en2;
+    rob_tag_t complete_tag0;
+    rob_tag_t complete_tag1;
+    rob_tag_t complete_tag2;
+    logic [WIDTH-1:0] complete_result0;
+    logic [WIDTH-1:0] complete_result1;
+    logic [WIDTH-1:0] complete_result2;
+    logic commit_en;
+    logic commit_en1;
+    logic flush;
+    logic squash_en;
+    cp_id_t squash_checkpoint_id;
+    logic resolve_en;
+    cp_id_t resolve_checkpoint_id;
+    rob_t head_entry;
+    rob_t head1_entry;
+    logic head_valid;
+    logic head_complete;
+    logic head1_valid;
+    logic head1_complete;
+    logic full;
+    logic empty;
+
+    pip_if #(rat_dis_packet_t) rob_packet_if (.clk(clk), .rst_n(rst_n));
+
+    rob_2w dut (
+        .rob_packet_if(rob_packet_if.consumer),
+        .complete_en0(complete_en0),
+        .complete_tag0(complete_tag0),
+        .complete_result0(complete_result0),
+        .complete_en1(complete_en1),
+        .complete_tag1(complete_tag1),
+        .complete_result1(complete_result1),
+        .complete_en2(complete_en2),
+        .complete_tag2(complete_tag2),
+        .complete_result2(complete_result2),
+        .commit_en0(commit_en),
+        .commit_en1(commit_en1),
+        .flush(flush),
+        .squash_en(squash_en),
+        .squash_checkpoint_id(squash_checkpoint_id),
+        .resolve_en(resolve_en),
+        .resolve_checkpoint_id(resolve_checkpoint_id),
+        .head_entry(head_entry),
+        .head_valid(head_valid),
+        .head_complete(head_complete),
+        .head1_entry(head1_entry),
+        .head1_valid(head1_valid),
+        .head1_complete(head1_complete),
+        .full(full),
+        .empty(empty)
+    );
+
+    initial clk = 1'b0;
+    always #5 clk = ~clk;
+
+    task automatic step_clk;
+    begin
+        @(posedge clk);
+        #1;
+    end
+    endtask
+
+    task automatic check_ok(input logic cond, input string msg);
+    begin
+        if (!cond) begin
+            $display("[FAIL] %s", msg);
+            $fatal;
+        end else begin
+            $display("[PASS] %s", msg);
+        end
+    end
+    endtask
+
+    task automatic set_rob_lane(
+        output rat_dis_lane_t lane,
+        input  logic          valid,
+        input  rob_tag_t      tag,
+        input  areg_t         rd,
+        input  preg_t         new_preg,
+        input  cp_mask_t      spec_mask
+    );
+    begin
+        lane = '0;
+        lane.valid = valid;
+        lane.data.rob_entry.datapath.rob_tag = tag;
+        lane.data.rob_entry.datapath.rd = rd;
+        lane.data.rob_entry.datapath.new_des_preg = new_preg;
+        lane.data.rob_entry.datapath.old_des_preg = preg_t'(rd);
+        lane.data.rob_entry.datapath.speculation_mask = spec_mask;
+        lane.data.rob_entry.datapath.complete = 1'b0;
+    end
+    endtask
+
+    initial begin
+        rst_n = 1'b0;
+        complete_en0 = 1'b0;
+        complete_en1 = 1'b0;
+        complete_en2 = 1'b0;
+        complete_tag0 = '0;
+        complete_tag1 = '0;
+        complete_tag2 = '0;
+        complete_result0 = '0;
+        complete_result1 = '0;
+        complete_result2 = '0;
+        commit_en = 1'b0;
+        commit_en1 = 1'b0;
+        flush = 1'b0;
+        squash_en = 1'b0;
+        squash_checkpoint_id = '0;
+        resolve_en = 1'b0;
+        resolve_checkpoint_id = '0;
+        rob_packet_if.valid = 1'b0;
+        rob_packet_if.data = '0;
+
+        repeat (2) step_clk;
+        rst_n = 1'b1;
+        step_clk;
+
+        check_ok(empty, "ROB starts empty");
+
+        rob_packet_if.valid = 1'b1;
+        set_rob_lane(rob_packet_if.data.lane0, 1'b1, rob_tag_t'(10), areg_t'(1), preg_t'(32), '0);
+        set_rob_lane(rob_packet_if.data.lane1, 1'b1, rob_tag_t'(11), areg_t'(2), preg_t'(33), '0);
+        #1;
+        check_ok(rob_packet_if.ready, "2-wide ROB accepts a dual enqueue");
+        step_clk;
+
+        rob_packet_if.valid = 1'b0;
+        check_ok(head_valid, "head valid after enqueue");
+        check_ok(head_entry.datapath.rob_tag == rob_tag_t'(10), "head is older lane0 entry");
+        check_ok(!head_complete, "head starts incomplete");
+
+        complete_en0 = 1'b1;
+        complete_tag0 = rob_tag_t'(10);
+        complete_result0 = 32'h1111_0000;
+        complete_en1 = 1'b1;
+        complete_tag1 = rob_tag_t'(11);
+        complete_result1 = 32'h2222_0000;
+        step_clk;
+
+        complete_en0 = 1'b0;
+        complete_en1 = 1'b0;
+        check_ok(head_complete, "complete port marks oldest entry complete");
+        check_ok(head_entry.datapath.result == 32'h1111_0000, "complete result stored for oldest entry");
+        check_ok(head1_valid, "second head view is valid after dual enqueue");
+        check_ok(head1_entry.datapath.rob_tag == rob_tag_t'(11), "second head view preserves program order");
+        check_ok(head1_complete, "second head view sees second complete port");
+
+        commit_en = 1'b1;
+        commit_en1 = 1'b1;
+        step_clk;
+        commit_en = 1'b0;
+        commit_en1 = 1'b0;
+        check_ok(empty, "ROB drains after dual-committing both entries");
+
+        rob_packet_if.valid = 1'b1;
+        set_rob_lane(rob_packet_if.data.lane0, 1'b1, rob_tag_t'(20), areg_t'(3), preg_t'(34), '0);
+        set_rob_lane(rob_packet_if.data.lane1, 1'b1, rob_tag_t'(21), areg_t'(4), preg_t'(35), cp_mask_t'(4'b0010));
+        step_clk;
+
+        rob_packet_if.valid = 1'b0;
+        squash_en = 1'b1;
+        squash_checkpoint_id = cp_id_t'(1);
+        step_clk;
+
+        squash_en = 1'b0;
+        check_ok(head_valid, "ROB keeps non-squashed older entry");
+        check_ok(head_entry.datapath.rob_tag == rob_tag_t'(20), "squash removes younger speculative entry");
+
+        complete_en0 = 1'b1;
+        complete_tag0 = rob_tag_t'(20);
+        complete_result0 = 32'h3333_0000;
+        step_clk;
+        complete_en0 = 1'b0;
+        commit_en = 1'b1;
+        step_clk;
+        commit_en = 1'b0;
+        check_ok(empty, "ROB drains after squash survivor commits");
+
+        rob_packet_if.valid = 1'b1;
+        set_rob_lane(rob_packet_if.data.lane0, 1'b1, rob_tag_t'(30), areg_t'(5), preg_t'(36), cp_mask_t'(4'b0100));
+        rob_packet_if.data.lane1 = '0;
+        step_clk;
+
+        rob_packet_if.valid = 1'b0;
+        resolve_en = 1'b1;
+        resolve_checkpoint_id = cp_id_t'(2);
+        step_clk;
+        resolve_en = 1'b0;
+        check_ok(head_entry.datapath.speculation_mask[2] == 1'b0, "resolve clears checkpoint bit in ROB entry");
+
+        flush = 1'b1;
+        step_clk;
+        flush = 1'b0;
+        check_ok(empty, "flush clears ROB");
+
+        $display("==== tb_rob_2w PASS ====");
+        $finish;
+    end
+
+endmodule
