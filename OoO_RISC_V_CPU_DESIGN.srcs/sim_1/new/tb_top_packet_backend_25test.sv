@@ -60,6 +60,12 @@ module tb_top_packet_backend_25test;
     logic bp_update_taken_q;
     logic bp_update_is_jalr_q;
     logic [31:0] bp_update_target_q;
+    logic commit_store_valid0_q;
+    logic commit_store_valid1_q;
+    logic [ROB_TAG_W-1:0] commit_store_tag0_q;
+    logic [ROB_TAG_W-1:0] commit_store_tag1_q;
+    logic rob_head_store_q;
+    logic rob_head1_store_q;
 
     top_packet_backend dut (
         .clk(clk),
@@ -145,6 +151,12 @@ module tb_top_packet_backend_25test;
         bp_update_taken_q       <= dut.bp_update_taken_exe;
         bp_update_is_jalr_q     <= dut.bp_update_is_jalr_exe;
         bp_update_target_q      <= dut.bp_update_target_exe;
+        commit_store_valid0_q   <= dut.commit_store_valid0;
+        commit_store_valid1_q   <= dut.commit_store_valid1;
+        commit_store_tag0_q     <= dut.rob_head.datapath.rob_tag;
+        commit_store_tag1_q     <= dut.rob_head1.datapath.rob_tag;
+        rob_head_store_q        <= dut.rob_head.control_signal.store;
+        rob_head1_store_q       <= dut.rob_head1.control_signal.store;
     end
 
     always @(negedge clk) begin
@@ -198,6 +210,44 @@ module tb_top_packet_backend_25test;
                      dut.active_checkpoint_mask_q);
         end
 
+        if (rst_n &&
+            ((dut.commit_store_valid0 &&
+              (dut.rob_head.datapath.rob_tag >= rob_tag_t'(8'd95)) &&
+              (dut.rob_head.datapath.rob_tag <= rob_tag_t'(8'd120))) ||
+             (dut.commit_store_valid1 &&
+              (dut.rob_head1.datapath.rob_tag >= rob_tag_t'(8'd95)) &&
+              (dut.rob_head1.datapath.rob_tag <= rob_tag_t'(8'd120))))) begin
+            $display("[COMMIT_TRACE] t=%0t c0=%0b tag0=%0d rd0=x%0d store0=%0b complete0=%0b c1=%0b tag1=%0d rd1=x%0d store1=%0b complete1=%0b",
+                     $time,
+                     dut.commit_store_valid0,
+                     dut.rob_head.datapath.rob_tag,
+                     dut.rob_head.datapath.rd,
+                     dut.rob_head.control_signal.store,
+                     dut.rob_head_complete_i,
+                     dut.commit_store_valid1,
+                     dut.rob_head1.datapath.rob_tag,
+                     dut.rob_head1.datapath.rd,
+                     dut.rob_head1.control_signal.store,
+                     dut.rob_head1_complete_i);
+        end
+
+        if (rst_n &&
+            dut.u_execution.u_lsu.req_valid &&
+            dut.u_execution.u_lsu.req_ready &&
+            dut.u_execution.u_lsu.control_signal.mem_write &&
+            (dut.u_execution.u_lsu.datapath.rob_tag >= rob_tag_t'(8'd95)) &&
+            (dut.u_execution.u_lsu.datapath.rob_tag <= rob_tag_t'(8'd120))) begin
+            $display("[LSU_STORE_ALLOC] t=%0t tag=%0d pc=%08h instr=%08h alloc_commit_match=%0b commit_seen_hit=%0b replay_hit=%0b seen_tag=%0b",
+                     $time,
+                     dut.u_execution.u_lsu.datapath.rob_tag,
+                     dut.u_execution.u_lsu.datapath.pc,
+                     dut.u_execution.u_lsu.datapath.instr,
+                     dut.u_execution.u_lsu.store_alloc_commit_match,
+                     dut.u_execution.u_lsu.commit_seen_hit,
+                     dut.u_execution.u_lsu.commit_replay_hit,
+                     dut.u_execution.u_lsu.commit_seen_valid[dut.u_execution.u_lsu.datapath.rob_tag]);
+        end
+
         if (rst_n && !pass_seen) begin
             preg_t a0_preg_now;
             preg_t a1_preg_now;
@@ -249,6 +299,12 @@ module tb_top_packet_backend_25test;
         bp_update_taken_q = 1'b0;
         bp_update_is_jalr_q = 1'b0;
         bp_update_target_q = '0;
+        commit_store_valid0_q = 1'b0;
+        commit_store_valid1_q = 1'b0;
+        commit_store_tag0_q = '0;
+        commit_store_tag1_q = '0;
+        rob_head_store_q = 1'b0;
+        rob_head1_store_q = 1'b0;
         pass_seen = 1'b0;
         pass_commit_count = 0;
         pass_a0_value = '0;
@@ -418,6 +474,61 @@ module tb_top_packet_backend_25test;
                      dut.issue1_if.data.datapath.checkpoint_id,
                      dut.issue1_if.data.datapath.speculation_mask);
 
+            $display("[LSU] req_ready=%0b pending=%0b pending_sent=%0b pending_blocking=%0b pending_tag=%0d pending_pc=%08h pending_instr=%08h pending_read=%0b pending_write=%0b pending_dep_mask=%b store_mask=%b drain=%0b drain_idx=%0d drain_wait=%0b mem_req=%0b/%0b mem_resp=%0b",
+                     dut.u_execution.u_lsu.req_ready,
+                     dut.u_execution.u_lsu.pending_valid,
+                     dut.u_execution.u_lsu.pending_mem_req_sent,
+                     dut.u_execution.u_lsu.pending_store_blocking,
+                     dut.u_execution.u_lsu.pending_datapath.rob_tag,
+                     dut.u_execution.u_lsu.pending_datapath.pc,
+                     dut.u_execution.u_lsu.pending_datapath.instr,
+                     dut.u_execution.u_lsu.pending_control.mem_read,
+                     dut.u_execution.u_lsu.pending_control.mem_write,
+                     dut.u_execution.u_lsu.pending_store_dep_mask,
+                     dut.u_execution.u_lsu.store_buf_valid_mask,
+                     dut.u_execution.u_lsu.store_drain_valid,
+                     dut.u_execution.u_lsu.store_drain_idx,
+                     dut.u_execution.u_lsu.store_drain_wait_q,
+                     dut.u_execution.u_lsu.mem_req_valid,
+                     dut.u_execution.u_lsu.mem_req_ready,
+                     dut.u_execution.u_lsu.mem_resp_valid);
+
+            $display("[COMMIT_STORE] now0=%0b tag0=%0d head_store=%0b head_complete=%0b now1=%0b tag1=%0d head1_store=%0b head1_complete=%0b prev0=%0b prev_tag0=%0d prev_head_store=%0b prev1=%0b prev_tag1=%0d prev_head1_store=%0b",
+                     dut.commit_store_valid0,
+                     dut.rob_head.datapath.rob_tag,
+                     dut.rob_head.control_signal.store,
+                     dut.rob_head_complete_i,
+                     dut.commit_store_valid1,
+                     dut.rob_head1.datapath.rob_tag,
+                     dut.rob_head1.control_signal.store,
+                     dut.rob_head1_complete_i,
+                     commit_store_valid0_q,
+                     commit_store_tag0_q,
+                     rob_head_store_q,
+                     commit_store_valid1_q,
+                     commit_store_tag1_q,
+                     rob_head1_store_q);
+
+            for (int i = 0; i < 8; i++) begin
+                if (dut.u_execution.u_lsu.store_buf_valid[i]) begin
+                    $display("[STORE_BUF] idx=%0d committed=%0b sent=%0b squashed=%0b age=%0d tag=%0d commit_seen=%0b pc=%08h instr=%08h addr_base=%08h imm=%08h data=%08h spec=%b",
+                             i,
+                             dut.u_execution.u_lsu.store_buf_committed[i],
+                             dut.u_execution.u_lsu.store_buf_mem_req_sent[i],
+                             dut.u_execution.u_lsu.store_buf_squashed[i],
+                             dut.u_execution.u_lsu.store_buf_age[i],
+                             dut.u_execution.u_lsu.store_buf_datapath[i].rob_tag,
+                             dut.u_execution.u_lsu.commit_seen_valid[
+                                 dut.u_execution.u_lsu.store_buf_datapath[i].rob_tag],
+                             dut.u_execution.u_lsu.store_buf_datapath[i].pc,
+                             dut.u_execution.u_lsu.store_buf_datapath[i].instr,
+                             dut.u_execution.u_lsu.store_buf_datapath[i].src1_value,
+                             dut.u_execution.u_lsu.store_buf_datapath[i].imm,
+                             dut.u_execution.u_lsu.store_buf_datapath[i].src2_value,
+                             dut.u_execution.u_lsu.store_buf_datapath[i].speculation_mask);
+                end
+            end
+
             $display("[BR_COMPLETE] valid=%0b tag=%0d resolve=%0b pc_src=%0b pc_branch=%08h cp_id=%0d",
                      dut.branch_complete_valid,
                      dut.branch_complete_tag,
@@ -463,13 +574,14 @@ module tb_top_packet_backend_25test;
 
             for (int i = 0; i < ROB_DEPTH; i++) begin
                 if (dut.u_dispatch_packet.u_rob_2w.valid_bits[i]) begin
-                    $display("[ROB] idx=%0d complete=%0b tag=%0d rd=x%0d new_p=%0d old_p=%0d cp_id=%0d spec_mask=%b result=%08h",
+                    $display("[ROB] idx=%0d complete=%0b tag=%0d rd=x%0d new_p=%0d old_p=%0d store=%0b cp_id=%0d spec_mask=%b result=%08h",
                              i,
                              dut.u_dispatch_packet.u_rob_2w.entries[i].datapath.complete,
                              dut.u_dispatch_packet.u_rob_2w.entries[i].datapath.rob_tag,
                              dut.u_dispatch_packet.u_rob_2w.entries[i].datapath.rd,
                              dut.u_dispatch_packet.u_rob_2w.entries[i].datapath.new_des_preg,
                              dut.u_dispatch_packet.u_rob_2w.entries[i].datapath.old_des_preg,
+                             dut.u_dispatch_packet.u_rob_2w.entries[i].control_signal.store,
                              dut.u_dispatch_packet.u_rob_2w.entries[i].datapath.checkpoint_id,
                              dut.u_dispatch_packet.u_rob_2w.entries[i].datapath.speculation_mask,
                              dut.u_dispatch_packet.u_rob_2w.entries[i].datapath.result);

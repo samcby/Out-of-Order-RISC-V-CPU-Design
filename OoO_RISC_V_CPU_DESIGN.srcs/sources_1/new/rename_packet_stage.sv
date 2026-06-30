@@ -87,9 +87,8 @@ module rename_packet_stage (
                                    (lane0_is_branch ? lane1_checkpoint_available :
                                                       lane0_checkpoint_available));
 
-    // The current packet fetch policy suppresses younger control-flow lanes.
-    // Keep dual-branch packets stalled until the backend grows precise
-    // per-lane checkpoint snapshots.
+    // Lane0 control flow truncates the packet, so a valid fetch packet contains
+    // at most one branch. Keep explicit dual-branch inputs stalled defensively.
     assign allow_rename = free_available &&
                           checkpoint_available &&
                           (branch_count < 2'd2);

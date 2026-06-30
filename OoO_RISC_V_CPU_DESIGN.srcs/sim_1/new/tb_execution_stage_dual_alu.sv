@@ -48,6 +48,10 @@ module tb_execution_stage_dual_alu;
         .interrupt_take(1'b0),
         .interrupt_mepc('0),
         .interrupt_mcause('0),
+        .commit_store_valid0(1'b0),
+        .commit_store_tag0('0),
+        .commit_store_valid1(1'b0),
+        .commit_store_tag1('0),
         .wb_valid(wb_valid),
         .wb_preg(wb_preg),
         .wb_tag(wb_tag),
@@ -140,8 +144,18 @@ module tb_execution_stage_dual_alu;
         issue1_if.valid = 1'b1;
         issue1_if.data = '0;
         issue1_if.data.fu_sel = FU_MEM;
+        issue1_if.data.control_signal.lsu.mem_write = 1'b1;
+        issue1_if.data.control_signal.lsu.funct3 = 3'b010;
+        issue1_if.data.datapath.rob_tag = rob_tag_t'(8);
+        issue1_if.data.datapath.src1_value = 32'h0000_0000;
+        issue1_if.data.datapath.src2_value = 32'h1234_5678;
         #1;
-        check_ok(!issue1_if.ready, "lane1 rejects non-ALU work until later execution widening");
+        check_ok(issue1_if.ready, "lane1 accepts a memory operation after execution widening");
+        step_clk;
+        issue1_if.valid = 1'b0;
+        step_clk;
+        check_ok(complete_valid && complete_tag == rob_tag_t'(8),
+                 "lane1 store completes through the tagged LSU response path");
 
         $display("==== tb_execution_stage_dual_alu PASS ====");
         $finish;

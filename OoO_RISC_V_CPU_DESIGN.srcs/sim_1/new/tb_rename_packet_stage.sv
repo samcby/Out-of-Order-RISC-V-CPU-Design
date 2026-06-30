@@ -178,6 +178,52 @@ module tb_rename_packet_stage;
         #1;
         check_ok(out_if.data.lane0.data.rs_entry.datapath.src_reg_1p == preg_t'(36), "restore recovers checkpointed branch rename");
 
+        in_if.valid = 1'b0;
+        rst_n = 1'b0;
+        step_clk;
+        rst_n = 1'b1;
+        step_clk;
+
+        in_if.valid = 1'b1;
+        set_alu_lane(in_if.data.lane0, 1'b1, 32'h0000_0040,
+                     areg_t'(0), areg_t'(0), areg_t'(9), 1'b1);
+        set_branch_lane(in_if.data.lane1, 1'b1, 32'h0000_0044,
+                        areg_t'(0), areg_t'(0), areg_t'(1), 1'b1);
+        #1;
+        check_ok(out_if.data.lane0.data.rs_entry.datapath.new_des_preg == preg_t'(32),
+                 "lane0 before lane1 branch receives first allocation");
+        check_ok(out_if.data.lane1.data.rs_entry.datapath.new_des_preg == preg_t'(33),
+                 "lane1 branch receives second allocation");
+        check_ok(out_if.data.lane1.data.rs_entry.datapath.checkpoint_id == cp_id_t'(0),
+                 "lane1 branch allocates checkpoint zero");
+        check_ok(out_if.data.lane1.data.rs_entry.datapath.speculation_mask == '0,
+                 "lane1 branch is not speculative under its own checkpoint");
+        step_clk;
+
+        set_alu_lane(in_if.data.lane0, 1'b1, 32'h0000_0048,
+                     areg_t'(0), areg_t'(0), areg_t'(9), 1'b1);
+        in_if.data.lane1 = '0;
+        #1;
+        check_ok(out_if.data.lane0.data.rs_entry.datapath.new_des_preg == preg_t'(34),
+                 "younger packet advances mapping past lane1 checkpoint");
+        step_clk;
+
+        in_if.valid = 1'b0;
+        restore_rat = 1'b1;
+        restore_checkpoint_id = cp_id_t'(0);
+        step_clk;
+        restore_rat = 1'b0;
+
+        in_if.valid = 1'b1;
+        set_alu_lane(in_if.data.lane0, 1'b1, 32'h0000_004c,
+                     areg_t'(9), areg_t'(1), areg_t'(0), 1'b0);
+        in_if.data.lane1 = '0;
+        #1;
+        check_ok(out_if.data.lane0.data.rs_entry.datapath.src_reg_1p == preg_t'(32),
+                 "lane1 branch restore preserves older lane0 rename");
+        check_ok(out_if.data.lane0.data.rs_entry.datapath.src_reg_2p == preg_t'(33),
+                 "lane1 branch restore preserves branch link rename");
+
         $display("==== tb_rename_packet_stage PASS ====");
         $finish;
     end

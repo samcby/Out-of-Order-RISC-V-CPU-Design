@@ -53,6 +53,8 @@ module issue_packet_arbiter (
                 sel1_alu = 1'b1;
             end else if (alu1_if.valid && !alu1_is_csr) begin
                 sel1_alu1 = 1'b1;
+            end else if (lsu_if.valid) begin
+                sel1_lsu = 1'b1;
             end
         end else if (alu_if.valid && lsu_if.valid) begin
             sel0_lsu = 1'b1;

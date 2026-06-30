@@ -77,6 +77,8 @@ module top_packet_backend (
     preg_t          retire_preg1;
     logic           commit_en;
     logic           commit_en1;
+    logic           commit_store_valid0;
+    logic           commit_store_valid1;
 
     logic           pc_src_exe;
     logic [WIDTH-1:0] pc_branch_exe;
@@ -141,6 +143,7 @@ module top_packet_backend (
     logic [31:0] perf_issue_count_q;
     logic [31:0] perf_dual_issue_count_q;
     logic [31:0] perf_branch_alu_dual_issue_count_q;
+    logic [31:0] perf_branch_mem_dual_issue_count_q;
     logic [31:0] perf_mem_alu_dual_issue_count_q;
     logic [31:0] perf_alu_alu_dual_issue_count_q;
     logic [31:0] perf_lane1_wb_count_q;
@@ -222,6 +225,10 @@ module top_packet_backend (
 
     assign commit_en    = rob_head_valid_i && rob_head_complete_i;
     assign commit_en1   = commit_en && rob_head1_valid_i && rob_head1_complete_i;
+    // LSU store buffer filters by tag, so forward every committed ROB tag.
+    // This avoids losing a store commit if ROB-side store metadata is stale.
+    assign commit_store_valid0 = commit_en;
+    assign commit_store_valid1 = commit_en1;
     assign retire_valid = commit_en &&
                           (rob_head.datapath.new_des_preg != '0) &&
                           (rob_head.datapath.rd != '0);
@@ -244,6 +251,7 @@ module top_packet_backend (
             perf_issue_count_q                 <= '0;
             perf_dual_issue_count_q            <= '0;
             perf_branch_alu_dual_issue_count_q <= '0;
+            perf_branch_mem_dual_issue_count_q <= '0;
             perf_mem_alu_dual_issue_count_q    <= '0;
             perf_alu_alu_dual_issue_count_q    <= '0;
             perf_lane1_wb_count_q              <= '0;
@@ -308,6 +316,11 @@ module top_packet_backend (
                     if ((issue_if.data.fu_sel == FU_BRANCH) &&
                         (issue1_if.data.fu_sel == FU_ALU)) begin
                         perf_branch_alu_dual_issue_count_q <= perf_branch_alu_dual_issue_count_q + 1'b1;
+                    end
+
+                    if ((issue_if.data.fu_sel == FU_BRANCH) &&
+                        (issue1_if.data.fu_sel == FU_MEM)) begin
+                        perf_branch_mem_dual_issue_count_q <= perf_branch_mem_dual_issue_count_q + 1'b1;
                     end
 
                     if ((issue_if.data.fu_sel == FU_MEM) &&
@@ -564,6 +577,10 @@ module top_packet_backend (
         .interrupt_take(interrupt_take),
         .interrupt_mepc(interrupt_mepc),
         .interrupt_mcause(interrupt_mcause),
+        .commit_store_valid0(commit_store_valid0),
+        .commit_store_tag0(rob_head.datapath.rob_tag),
+        .commit_store_valid1(commit_store_valid1),
+        .commit_store_tag1(rob_head1.datapath.rob_tag),
         .wb_valid(wb_valid),
         .wb_preg(wb_preg),
         .wb_tag(wb_tag),

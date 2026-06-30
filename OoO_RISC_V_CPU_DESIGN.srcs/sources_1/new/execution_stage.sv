@@ -8,6 +8,10 @@ module execution_stage (
     input  logic                           interrupt_take,
     input  logic [defines_pkg::WIDTH-1:0]  interrupt_mepc,
     input  logic [defines_pkg::WIDTH-1:0]  interrupt_mcause,
+    input  logic                           commit_store_valid0,
+    input  defines_pkg::rob_tag_t          commit_store_tag0,
+    input  logic                           commit_store_valid1,
+    input  defines_pkg::rob_tag_t          commit_store_tag1,
 
     output logic                           wb_valid,
     output defines_pkg::preg_t             wb_preg,
@@ -122,6 +126,12 @@ module execution_stage (
     logic branch_issue_now;
     logic issue1_alu_candidate;
     logic issue1_alu_fire;
+    logic issue1_mem_candidate;
+    logic issue1_mem_fire;
+    logic issue0_mem_candidate;
+    logic issue0_mem_fire;
+    lsu_control_t selected_mem_control;
+    rs_datapath_t selected_mem_datapath;
 
     assign resolve_now = br_pipe_valid[BR_RESOLVE_LAT-1];
     assign resolve_pc_src_now = br_pipe_pc_src[BR_RESOLVE_LAT-1];
@@ -142,25 +152,42 @@ module execution_stage (
         (in1_if.data.fu_sel == FU_ALU) &&
         !in1_if.data.control_signal.alu.csr_en &&
         !in1_if.data.control_signal.alu.sys_en;
+    assign issue1_mem_candidate =
+        in1_if.valid &&
+        (in1_if.data.fu_sel == FU_MEM);
+    assign issue0_mem_candidate =
+        in_if.valid &&
+        (in_if.data.fu_sel == FU_MEM);
+    assign selected_mem_control =
+        issue1_mem_candidate ? in1_if.data.control_signal.lsu :
+                               in_if.data.control_signal.lsu;
+    assign selected_mem_datapath =
+        issue1_mem_candidate ? in1_if.data.datapath :
+                               in_if.data.datapath;
     assign in1_if.ready =
         !in1_if.valid ||
-        (issue1_alu_candidate &&
-         !interrupt_take);
+        (!interrupt_take &&
+         (issue1_alu_candidate ||
+          (issue1_mem_candidate &&
+           !lsu_resp_valid &&
+           (mem_addr_misaligned_candidate || lsu_req_ready))));
     assign issue1_alu_fire = in1_if.valid && in1_if.ready && issue1_alu_candidate;
-    assign mem_issue_candidate = in_if.valid && (in_if.data.fu_sel == FU_MEM);
-    assign mem_fu_fire = in_if.valid && in_if.ready && (in_if.data.fu_sel == FU_MEM);
-    assign mem_eff_addr = in_if.data.datapath.src1_value + in_if.data.datapath.imm;
+    assign issue1_mem_fire = in1_if.valid && in1_if.ready && issue1_mem_candidate;
+    assign issue0_mem_fire = in_if.valid && in_if.ready && issue0_mem_candidate;
+    assign mem_issue_candidate = issue0_mem_candidate || issue1_mem_candidate;
+    assign mem_fu_fire = issue0_mem_fire || issue1_mem_fire;
+    assign mem_eff_addr = selected_mem_datapath.src1_value + selected_mem_datapath.imm;
     assign mem_load_misaligned_candidate =
         mem_issue_candidate &&
-        in_if.data.control_signal.lsu.mem_read &&
-        ((((in_if.data.control_signal.lsu.funct3 == 3'b001) ||
-           (in_if.data.control_signal.lsu.funct3 == 3'b101)) && mem_eff_addr[0]) ||
-         ((in_if.data.control_signal.lsu.funct3 == 3'b010) && (mem_eff_addr[1:0] != 2'b00)));
+        selected_mem_control.mem_read &&
+        ((((selected_mem_control.funct3 == 3'b001) ||
+           (selected_mem_control.funct3 == 3'b101)) && mem_eff_addr[0]) ||
+         ((selected_mem_control.funct3 == 3'b010) && (mem_eff_addr[1:0] != 2'b00)));
     assign mem_store_misaligned_candidate =
         mem_issue_candidate &&
-        in_if.data.control_signal.lsu.mem_write &&
-        (((in_if.data.control_signal.lsu.funct3 == 3'b001) && mem_eff_addr[0]) ||
-         ((in_if.data.control_signal.lsu.funct3 == 3'b010) && (mem_eff_addr[1:0] != 2'b00)));
+        selected_mem_control.mem_write &&
+        (((selected_mem_control.funct3 == 3'b001) && mem_eff_addr[0]) ||
+         ((selected_mem_control.funct3 == 3'b010) && (mem_eff_addr[1:0] != 2'b00)));
     assign mem_addr_misaligned_candidate =
         mem_load_misaligned_candidate || mem_store_misaligned_candidate;
     assign mem_load_misaligned_now =
@@ -170,10 +197,10 @@ module execution_stage (
     assign mem_addr_misaligned_now = mem_load_misaligned_now || mem_store_misaligned_now;
     assign lsu_req_valid = mem_fu_fire &&
                            !mem_addr_misaligned_now &&
-                           (in_if.data.control_signal.lsu.mem_read ||
-                            in_if.data.control_signal.lsu.mem_write);
+                           (selected_mem_control.mem_read ||
+                            selected_mem_control.mem_write);
     always_comb begin
-        lsu_control_safe = in_if.data.control_signal.lsu;
+        lsu_control_safe = selected_mem_control;
         if (mem_addr_misaligned_now) begin
             lsu_control_safe.mem_read  = 1'b0;
             lsu_control_safe.mem_write = 1'b0;
@@ -217,7 +244,9 @@ module execution_stage (
     assign csr_mret_en       = !interrupt_take &&
                                sys_issue_now &&
                                (in_if.data.control_signal.alu.sys_op == SYS_MRET);
-    assign csr_trap_mepc     = interrupt_take ? interrupt_mepc : in_if.data.datapath.pc;
+    assign csr_trap_mepc     = interrupt_take ? interrupt_mepc :
+                               mem_addr_misaligned_now ? selected_mem_datapath.pc :
+                                                        in_if.data.datapath.pc;
     assign csr_trap_mcause   = interrupt_take ? interrupt_mcause :
                                 branch_addr_misaligned_now ? MCAUSE_INSTR_ADDR_MISALIGNED :
                                 mem_load_misaligned_now ? MCAUSE_LOAD_ADDR_MISALIGNED :
@@ -359,8 +388,12 @@ module execution_stage (
         .squash_checkpoint_id(resolve_cp_id_now),
         .resolve_en    (resolve_now),
         .resolve_checkpoint_id(resolve_cp_id_now),
+        .commit_store_valid0(commit_store_valid0),
+        .commit_store_tag0(commit_store_tag0),
+        .commit_store_valid1(commit_store_valid1),
+        .commit_store_tag1(commit_store_tag1),
         .control_signal(lsu_control_safe),
-        .datapath      (in_if.data.datapath),
+        .datapath      (selected_mem_datapath),
         .resp_valid    (lsu_resp_valid),
         .resp_tag      (lsu_resp_tag),
         .resp_preg     (lsu_resp_preg),
@@ -459,6 +492,15 @@ module execution_stage (
                     wb1_tag    <= in1_if.data.datapath.rob_tag;
                     wb1_result <= alu1_result;
                 end
+            end
+
+            if (issue1_mem_fire && mem_addr_misaligned_now) begin
+                lane1_complete_valid <= 1'b1;
+                lane1_complete_tag   <= selected_mem_datapath.rob_tag;
+                lane1_complete_result <= '0;
+                pc_src    <= 1'b1;
+                pc_branch <= exception_vector_pc;
+                recover_rat <= 1'b0;
             end
 
             if (interrupt_take) begin

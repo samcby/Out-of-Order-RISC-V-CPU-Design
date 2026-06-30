@@ -100,6 +100,7 @@ module decode_lane #(
         out_data.control_signal.rs_control_signal.branch_control_signal.funct3   = funct3;
 
         out_data.control_signal.rob_control_signal.branch = branch;
+        out_data.control_signal.rob_control_signal.store  = mem_write;
     end
 
     imm_gen #(

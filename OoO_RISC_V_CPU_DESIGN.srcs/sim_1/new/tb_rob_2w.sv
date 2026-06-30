@@ -205,6 +205,54 @@ module tb_rob_2w;
         flush = 1'b0;
         check_ok(empty, "flush clears ROB");
 
+        // Fill all but one slot, then verify that a dual packet receives
+        // stable backpressure without feeding valid back into ready.
+        for (int i = 0; i < 7; i++) begin
+            rob_packet_if.valid = 1'b1;
+            set_rob_lane(rob_packet_if.data.lane0, 1'b1,
+                         rob_tag_t'(40 + (i * 2)), areg_t'(1), preg_t'(40), '0);
+            set_rob_lane(rob_packet_if.data.lane1, 1'b1,
+                         rob_tag_t'(41 + (i * 2)), areg_t'(2), preg_t'(41), '0);
+            #1;
+            check_ok(rob_packet_if.ready, "ROB accepts packet while two slots remain");
+            step_clk;
+        end
+
+        rob_packet_if.valid = 1'b1;
+        set_rob_lane(rob_packet_if.data.lane0, 1'b1,
+                     rob_tag_t'(54), areg_t'(3), preg_t'(42), '0);
+        rob_packet_if.data.lane1 = '0;
+        #1;
+        check_ok(rob_packet_if.ready, "ROB accepts one lane into the penultimate free slot");
+        step_clk;
+
+        set_rob_lane(rob_packet_if.data.lane0, 1'b1,
+                     rob_tag_t'(55), areg_t'(4), preg_t'(43), '0);
+        set_rob_lane(rob_packet_if.data.lane1, 1'b1,
+                     rob_tag_t'(56), areg_t'(5), preg_t'(44), '0);
+        rob_packet_if.valid = 1'b0;
+        #1;
+        check_ok(!rob_packet_if.ready,
+                 "dual packet shape requires two slots even before valid asserts");
+        rob_packet_if.valid = 1'b1;
+        #1;
+        check_ok(!rob_packet_if.ready,
+                 "dual packet is stably backpressured with one ROB slot free");
+
+        rob_packet_if.data.lane1 = '0;
+        #1;
+        check_ok(rob_packet_if.ready,
+                 "single-lane packet can use the final ROB slot");
+        step_clk;
+        check_ok(full, "ROB reports full after final single-lane enqueue");
+
+        rob_packet_if.valid = 1'b0;
+        rob_packet_if.data = '0;
+        flush = 1'b1;
+        step_clk;
+        flush = 1'b0;
+        check_ok(empty, "flush clears near-capacity ROB regression state");
+
         $display("==== tb_rob_2w PASS ====");
         $finish;
     end

@@ -71,8 +71,12 @@ module rob_2w (
     rob_count_t survive_count;
     rob_idx_t tail_after_squash;
 
-    assign lane0_req = rob_packet_if.valid && rob_packet_if.data.lane0.valid;
-    assign lane1_req = rob_packet_if.valid && rob_packet_if.data.lane1.valid;
+    // Capacity must be computed from the offered packet shape, independent
+    // of the valid/ready handshake. Including rob_packet_if.valid here forms
+    // a combinational loop through dispatch_ready when only one ROB slot is
+    // free and the producer offers a two-lane packet.
+    assign lane0_req = rob_packet_if.data.lane0.valid;
+    assign lane1_req = rob_packet_if.data.lane1.valid;
     assign push_req_count = {1'b0, lane0_req} + {1'b0, lane1_req};
     assign free_slots = rob_count_t'(ROB_DEPTH) - count_q;
 

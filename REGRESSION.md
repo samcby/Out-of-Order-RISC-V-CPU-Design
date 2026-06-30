@@ -1,105 +1,172 @@
 # Regression Guide
 
-This project is validated with Vivado Simulator 2019.1. The current mainline
-integration top is `top_packet_backend`.
+The current design top is `top_packet_backend`. Validation targets Vivado
+Simulator 2019.1.
 
-Before running a regression in Vivado, update compile order if sources were
-added or the active simulation top changed:
+## Recommended Workflow
+
+Open `OoO_RISC_V_CPU_DESIGN.xpr`, then source the regression helper from the
+Vivado Tcl console:
 
 ```tcl
-update_compile_order -fileset sources_1
-update_compile_order -fileset sim_1
+source scripts/run_regression.tcl
+list_regression_suites
+run_regression quick
 ```
 
-## Quick Mainline Regression
+The helper automatically closes the active simulation, selects each simulation
+top, launches XSim, and advances the simulation. It does not delete, disable,
+or rewrite any testbench.
 
-Run this set after most packet-backend changes:
+Available groups:
+
+| Group | Purpose |
+| --- | --- |
+| `quick` | Mainline architecture confidence after ordinary RTL changes |
+| `multi_issue` | Frontend, rename, issue, execution, writeback, and commit |
+| `memory` | Cache, memory ordering, forwarding, and precise stores |
+| `full` | Milestone regression before a push or architecture transition |
+
+Every testbench prints its own `PASS` or `FAIL` banner. The Tcl script reports
+launch/runtime errors, while assertion results remain visible in the console.
+
+## Consolidated Architecture Test
+
+`tb_top_packet_backend_multi_issue_suite` is the first consolidated
+testbench. It reuses one `top_packet_backend` instance and runs three isolated
+programs separated by reset:
+
+### Scenario 1: Issue Mix
+
+- `branch + ALU`
+- `MEM + ALU`
+- `ALU + ALU`
+- lane1 writeback
+- dependent wakeup
+- dual commit
+- performance counters
+
+### Scenario 2: Branch + Memory
+
+- branch and memory issue in the same cycle
+- slot1 load completion
+- dependent load consumer
+- ROB drain
+
+### Scenario 3: Lane1 Control Flow
+
+- lane1 conditional branch
+- lane1 `JAL`
+- lane1 `JALR`
+- same-packet lane0-to-lane1 RAW dependency
+- JALR target-cache miss wait
+- execution redirect
+- wrong-path suppression
+
+## Suite Contents
+
+### Quick
 
 ```text
+tb_top_packet_backend_multi_issue_suite
 tb_top_packet_backend_rv32i_smoke
 tb_top_packet_backend_25test
 tb_top_packet_backend_trap_smoke
 tb_top_packet_backend_interrupt_smoke
-tb_top_packet_backend_perf_counter_smoke
 ```
 
-## Multi-Issue Regression
-
-Run this set after changing rename, dispatch, issue, reservation stations,
-execution lanes, writeback, ROB completion, or commit:
+### Multi-Issue
 
 ```text
+tb_fetch_packet_stage
+tb_rename_packet_stage
 tb_rs_2issue
 tb_issue_packet_arbiter
 tb_dispatch_packet_stage_dual_issue
 tb_reg_file_2w
 tb_rob_2w
-tb_rename_dispatch_packet_smoke
-tb_top_packet_backend_alu_alu_dual_issue_smoke
-tb_top_packet_backend_alu_mem_dual_issue_smoke
-tb_top_packet_backend_dual_commit_smoke
-tb_top_packet_backend_lane1_wakeup_smoke
+tb_top_packet_backend_multi_issue_suite
 tb_top_packet_backend_lane1_squash_smoke
+tb_top_packet_backend_25test
 ```
 
-## Control and Trap Regression
-
-Run this set after changing branch redirect, checkpoint recovery, CSR/system
-execution, trap entry, interrupt entry, or MRET:
-
-```text
-tb_top_packet_backend_branch_mispredict_smoke
-tb_top_packet_backend_trap_smoke
-tb_top_packet_backend_interrupt_smoke
-tb_top_trap_smoke
-tb_top_interrupt_smoke
-tb_top_interrupt_sources_smoke
-```
-
-## Memory Regression
-
-Run this set after changing LSU, cache, data memory, load/store decode, or
-alignment exception logic:
+### Memory
 
 ```text
 tb_data_cache_smoke
+tb_memory_order_queue
+tb_lsu_commit_store
+tb_top_packet_backend_multi_issue_suite
 tb_top_packet_backend_rv32i_smoke
-tb_top_packet_backend_alu_mem_dual_issue_smoke
 tb_top_misaligned_smoke
 ```
 
-## Full Milestone Smoke Set
-
-This is the recommended set before pushing a major milestone:
+### Full
 
 ```text
 tb_fetch_packet_stage
 tb_decode_packet_stage
+tb_rename_packet_stage
 tb_rs_2issue
 tb_issue_packet_arbiter
 tb_dispatch_packet_stage_dual_issue
 tb_reg_file_2w
 tb_rob_2w
-tb_rename_dispatch_packet_smoke
 tb_data_cache_smoke
+tb_memory_order_queue
+tb_lsu_commit_store
+tb_top_packet_backend_multi_issue_suite
+tb_top_packet_backend_lane1_squash_smoke
 tb_top_packet_backend_rv32i_smoke
 tb_top_packet_backend_25test
 tb_top_packet_backend_trap_smoke
 tb_top_packet_backend_interrupt_smoke
-tb_top_packet_backend_perf_counter_smoke
-tb_top_packet_backend_alu_alu_dual_issue_smoke
-tb_top_packet_backend_alu_mem_dual_issue_smoke
-tb_top_packet_backend_dual_commit_smoke
-tb_top_packet_backend_branch_mispredict_smoke
-tb_top_packet_backend_lane1_squash_smoke
 ```
 
-## Current Milestone Notes
+## Retired Integration Tests
 
-- `top_packet_backend` is the active mainline integration top.
-- `top.sv` remains as a legacy scalar-oriented compatibility path.
-- Memory operations are still restricted to one LSU path and are issued on
-  lane0.
-- CSR/system operations are intentionally serialized as single-issue operations.
-- The packet backend supports selected true dual-issue combinations:
-  `ALU+ALU`, `MEM+ALU`, and `branch+ALU`.
+After the consolidated suite and `quick` regression passed, the following
+duplicated integration smokes were removed:
+
+| Retired test | Replacement coverage |
+| --- | --- |
+| `tb_top_packet_backend_alu_alu_dual_issue_smoke` | Scenario 1 |
+| `tb_top_packet_backend_alu_mem_dual_issue_smoke` | Scenario 1 |
+| `tb_top_packet_backend_branch_mem_dual_issue_smoke` | Scenario 2 |
+| `tb_top_packet_backend_dual_commit_smoke` | Scenario 1 |
+| `tb_top_packet_backend_perf_counter_smoke` | Scenario 1 |
+| `tb_top_packet_backend_lane1_control_smoke` | Scenario 3 |
+
+Their checks are represented in
+`tb_top_packet_backend_multi_issue_suite`; the Git history remains the source
+for recovering an old focused test if a future failure requires it.
+
+### Tests That Should Remain Separate
+
+These tests exercise distinct DUT boundaries or corner cases and should not be
+merged merely to reduce the file count:
+
+- `tb_rs_2issue`
+- `tb_issue_packet_arbiter`
+- `tb_reg_file_2w`
+- `tb_rob_2w`
+- `tb_memory_order_queue`
+- `tb_lsu_commit_store`
+- `tb_data_cache_smoke`
+- `tb_top_packet_backend_lane1_squash_smoke`
+- `tb_top_packet_backend_25test`
+- trap and interrupt tests
+
+Keeping these focused makes failures much easier to localize.
+
+## Manual Fallback
+
+If the Tcl runner cannot launch because XSim holds `simulate.log`:
+
+1. Cancel any active `run` command.
+2. Execute `catch {close_sim}` in the Vivado Tcl console.
+3. Close duplicate Vivado or XSim processes using the same project.
+4. Source the script again and rerun the requested group.
+
+Incremental simulation is intentionally disabled for `sim_1` to avoid stale
+snapshot restore failures in Vivado 2019.1.

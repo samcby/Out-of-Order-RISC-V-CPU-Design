@@ -116,6 +116,7 @@ package defines_pkg;
 
     typedef struct packed {
         logic branch;
+        logic store;
     } rob_control_t;
 
     typedef struct packed {

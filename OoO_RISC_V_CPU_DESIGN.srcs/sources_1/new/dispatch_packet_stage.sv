@@ -117,18 +117,13 @@ module dispatch_packet_stage (
         .out1_if(alu_out1_if.producer)
     );
 
-    rs #(
-        .T(lsu_rs_t),
-        .OPERATION(FU_MEM),
-        .SINGLE_ENTRY(1'b1)
-    ) u_rs_lsu (
+    memory_order_queue u_memory_order_queue (
         .wb_valid(wb_valid),
         .wb_preg(wb_preg),
         .wb_result(wb_result),
         .wb1_valid(wb1_valid),
         .wb1_preg(wb1_preg),
         .wb1_result(wb1_result),
-        .fu_sel(fu_sel),
         .flush(flush),
         .squash_en(squash_en),
         .squash_checkpoint_id(squash_checkpoint_id),

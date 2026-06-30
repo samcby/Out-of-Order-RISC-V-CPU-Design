@@ -69,6 +69,7 @@ module top (
     logic           retire_valid;
     preg_t          retire_preg;
     logic           commit_en;
+    logic           commit_store_valid;
 
     logic           pc_src_exe;
     logic [WIDTH-1:0] pc_branch_exe;
@@ -183,6 +184,9 @@ module top (
     
 
     assign commit_en    = rob_head_valid_i && rob_head_complete_i;
+    // LSU store buffer filters by tag, so forwarding every committed ROB tag
+    // is safe and avoids depending on duplicate ROB-side store metadata.
+    assign commit_store_valid = commit_en;
     assign retire_valid = commit_en &&
                           (rob_head.datapath.new_des_preg != '0) &&
                           (rob_head.datapath.rd != '0);
@@ -370,6 +374,10 @@ module top (
         .interrupt_take (interrupt_take),
         .interrupt_mepc (interrupt_mepc),
         .interrupt_mcause(interrupt_mcause),
+        .commit_store_valid0(commit_store_valid),
+        .commit_store_tag0(rob_head.datapath.rob_tag),
+        .commit_store_valid1(1'b0),
+        .commit_store_tag1('0),
         .wb_valid       (wb_valid),
         .wb_preg        (wb_preg),
         .wb_tag         (wb_tag),
