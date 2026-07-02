@@ -1,6 +1,7 @@
 module fetch_packet_stage #(
     parameter int WIDTH = 32,
-    parameter int DEPTH_BYTES = 4096
+    parameter int DEPTH_BYTES = 4096,
+    parameter bit ENABLE_2WIDE = 1'b1
 )(
     input  logic             load_en,
     input  logic [WIDTH-1:0] load_addr,
@@ -202,7 +203,7 @@ module fetch_packet_stage #(
 
     // A lane1 control-flow instruction is the youngest instruction in the
     // packet, so it can redirect without invalidating lane0.
-    assign lane1_valid = !lane0_is_control;
+    assign lane1_valid = ENABLE_2WIDE && !lane0_is_control;
 
     always_comb begin
         pred_taken = 1'b0;

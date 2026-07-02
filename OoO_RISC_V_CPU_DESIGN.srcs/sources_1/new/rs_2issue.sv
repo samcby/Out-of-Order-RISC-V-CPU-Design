@@ -1,10 +1,14 @@
+`timescale 1ns / 1ps
+
 module rs_2issue #(
     parameter type T = defines_pkg::alu_rs_t
 )(
     input  logic                           wb_valid,
+    input  logic                           wb_is_fp,
     input  defines_pkg::preg_t             wb_preg,
     input  logic [defines_pkg::WIDTH-1:0]  wb_result,
     input  logic                           wb1_valid,
+    input  logic                           wb1_is_fp,
     input  defines_pkg::preg_t             wb1_preg,
     input  logic [defines_pkg::WIDTH-1:0]  wb1_result,
 
@@ -46,10 +50,25 @@ module rs_2issue #(
     logic push_fire0;
     logic push_fire1;
 
+    function automatic logic domain_match(
+        input logic writeback_is_fp,
+        input logic source_is_fp
+    );
+    begin
+        domain_match =
+            ((source_is_fp === 1'b1) ? 1'b1 : 1'b0) ==
+            ((writeback_is_fp === 1'b1) ? 1'b1 : 1'b0);
+    end
+    endfunction
+
     always_comb begin
         for (int i = 0; i < RS_DEPTH; i++) begin
             free_vec[i]  = !used[i];
-            ready_vec[i] = used[i] && entries[i].src1_ready && entries[i].src2_ready;
+            ready_vec[i] = used[i] &&
+                           entries[i].src1_ready &&
+                           entries[i].src2_ready &&
+                           (entries[i].src3_ready ||
+                            !entries[i].datapath.src3_is_fp);
         end
     end
 
@@ -115,53 +134,89 @@ module rs_2issue #(
 
         if (wb_valid) begin
             if (!enqueue_entry0.src1_ready &&
+                domain_match(wb_is_fp, enqueue_entry0.datapath.src1_is_fp) &&
                 enqueue_entry0.datapath.src_reg_1p == wb_preg) begin
                 enqueue_entry0.src1_ready = 1'b1;
                 enqueue_entry0.datapath.src1_value = wb_result;
             end
 
             if (!enqueue_entry0.src2_ready &&
+                domain_match(wb_is_fp, enqueue_entry0.datapath.src2_is_fp) &&
                 enqueue_entry0.datapath.src_reg_2p == wb_preg) begin
                 enqueue_entry0.src2_ready = 1'b1;
                 enqueue_entry0.datapath.src2_value = wb_result;
             end
 
+            if (!enqueue_entry0.src3_ready &&
+                domain_match(wb_is_fp, enqueue_entry0.datapath.src3_is_fp) &&
+                enqueue_entry0.datapath.src_reg_3p == wb_preg) begin
+                enqueue_entry0.src3_ready = 1'b1;
+                enqueue_entry0.datapath.src3_value = wb_result;
+            end
+
             if (!enqueue_entry1.src1_ready &&
+                domain_match(wb_is_fp, enqueue_entry1.datapath.src1_is_fp) &&
                 enqueue_entry1.datapath.src_reg_1p == wb_preg) begin
                 enqueue_entry1.src1_ready = 1'b1;
                 enqueue_entry1.datapath.src1_value = wb_result;
             end
 
             if (!enqueue_entry1.src2_ready &&
+                domain_match(wb_is_fp, enqueue_entry1.datapath.src2_is_fp) &&
                 enqueue_entry1.datapath.src_reg_2p == wb_preg) begin
                 enqueue_entry1.src2_ready = 1'b1;
                 enqueue_entry1.datapath.src2_value = wb_result;
+            end
+
+            if (!enqueue_entry1.src3_ready &&
+                domain_match(wb_is_fp, enqueue_entry1.datapath.src3_is_fp) &&
+                enqueue_entry1.datapath.src_reg_3p == wb_preg) begin
+                enqueue_entry1.src3_ready = 1'b1;
+                enqueue_entry1.datapath.src3_value = wb_result;
             end
         end
 
         if (wb1_valid) begin
             if (!enqueue_entry0.src1_ready &&
+                domain_match(wb1_is_fp, enqueue_entry0.datapath.src1_is_fp) &&
                 enqueue_entry0.datapath.src_reg_1p == wb1_preg) begin
                 enqueue_entry0.src1_ready = 1'b1;
                 enqueue_entry0.datapath.src1_value = wb1_result;
             end
 
             if (!enqueue_entry0.src2_ready &&
+                domain_match(wb1_is_fp, enqueue_entry0.datapath.src2_is_fp) &&
                 enqueue_entry0.datapath.src_reg_2p == wb1_preg) begin
                 enqueue_entry0.src2_ready = 1'b1;
                 enqueue_entry0.datapath.src2_value = wb1_result;
             end
 
+            if (!enqueue_entry0.src3_ready &&
+                domain_match(wb1_is_fp, enqueue_entry0.datapath.src3_is_fp) &&
+                enqueue_entry0.datapath.src_reg_3p == wb1_preg) begin
+                enqueue_entry0.src3_ready = 1'b1;
+                enqueue_entry0.datapath.src3_value = wb1_result;
+            end
+
             if (!enqueue_entry1.src1_ready &&
+                domain_match(wb1_is_fp, enqueue_entry1.datapath.src1_is_fp) &&
                 enqueue_entry1.datapath.src_reg_1p == wb1_preg) begin
                 enqueue_entry1.src1_ready = 1'b1;
                 enqueue_entry1.datapath.src1_value = wb1_result;
             end
 
             if (!enqueue_entry1.src2_ready &&
+                domain_match(wb1_is_fp, enqueue_entry1.datapath.src2_is_fp) &&
                 enqueue_entry1.datapath.src_reg_2p == wb1_preg) begin
                 enqueue_entry1.src2_ready = 1'b1;
                 enqueue_entry1.datapath.src2_value = wb1_result;
+            end
+
+            if (!enqueue_entry1.src3_ready &&
+                domain_match(wb1_is_fp, enqueue_entry1.datapath.src3_is_fp) &&
+                enqueue_entry1.datapath.src_reg_3p == wb1_preg) begin
+                enqueue_entry1.src3_ready = 1'b1;
+                enqueue_entry1.datapath.src3_value = wb1_result;
             end
         end
     end
@@ -212,15 +267,24 @@ module rs_2issue #(
                 for (int i = 0; i < RS_DEPTH; i++) begin
                     if (used[i]) begin
                         if (!entries[i].src1_ready &&
+                            domain_match(wb_is_fp, entries[i].datapath.src1_is_fp) &&
                             entries[i].datapath.src_reg_1p == wb_preg) begin
                             entries[i].src1_ready <= 1'b1;
                             entries[i].datapath.src1_value <= wb_result;
                         end
 
                         if (!entries[i].src2_ready &&
+                            domain_match(wb_is_fp, entries[i].datapath.src2_is_fp) &&
                             entries[i].datapath.src_reg_2p == wb_preg) begin
                             entries[i].src2_ready <= 1'b1;
                             entries[i].datapath.src2_value <= wb_result;
+                        end
+
+                        if (!entries[i].src3_ready &&
+                            domain_match(wb_is_fp, entries[i].datapath.src3_is_fp) &&
+                            entries[i].datapath.src_reg_3p == wb_preg) begin
+                            entries[i].src3_ready <= 1'b1;
+                            entries[i].datapath.src3_value <= wb_result;
                         end
                     end
                 end
@@ -230,15 +294,24 @@ module rs_2issue #(
                 for (int i = 0; i < RS_DEPTH; i++) begin
                     if (used[i]) begin
                         if (!entries[i].src1_ready &&
+                            domain_match(wb1_is_fp, entries[i].datapath.src1_is_fp) &&
                             entries[i].datapath.src_reg_1p == wb1_preg) begin
                             entries[i].src1_ready <= 1'b1;
                             entries[i].datapath.src1_value <= wb1_result;
                         end
 
                         if (!entries[i].src2_ready &&
+                            domain_match(wb1_is_fp, entries[i].datapath.src2_is_fp) &&
                             entries[i].datapath.src_reg_2p == wb1_preg) begin
                             entries[i].src2_ready <= 1'b1;
                             entries[i].datapath.src2_value <= wb1_result;
+                        end
+
+                        if (!entries[i].src3_ready &&
+                            domain_match(wb1_is_fp, entries[i].datapath.src3_is_fp) &&
+                            entries[i].datapath.src_reg_3p == wb1_preg) begin
+                            entries[i].src3_ready <= 1'b1;
+                            entries[i].datapath.src3_value <= wb1_result;
                         end
                     end
                 end

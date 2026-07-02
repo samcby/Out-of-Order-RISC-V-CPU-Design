@@ -1,12 +1,16 @@
+`timescale 1ns / 1ps
+
 module rs #(
     parameter type T = defines_pkg::alu_rs_t,
     parameter logic [1:0] OPERATION = defines_pkg::FU_ALU,
     parameter bit SINGLE_ENTRY = 1'b0
 )(
     input  logic                           wb_valid,
+    input  logic                           wb_is_fp,
     input  defines_pkg::preg_t             wb_preg,
     input  logic [defines_pkg::WIDTH-1:0]  wb_result,
     input  logic                           wb1_valid,
+    input  logic                           wb1_is_fp,
     input  defines_pkg::preg_t             wb1_preg,
     input  logic [defines_pkg::WIDTH-1:0]  wb1_result,
 
@@ -37,10 +41,25 @@ module rs #(
     logic [$clog2(RS_DEPTH)-1:0] issue_idx;
     T enqueue_entry;
 
+    function automatic logic domain_match(
+        input logic writeback_is_fp,
+        input logic source_is_fp
+    );
+    begin
+        domain_match =
+            ((source_is_fp === 1'b1) ? 1'b1 : 1'b0) ==
+            ((writeback_is_fp === 1'b1) ? 1'b1 : 1'b0);
+    end
+    endfunction
+
     always_comb begin
         for (int i = 0; i < RS_DEPTH; i++) begin
             free_vec[i]  = !used[i];
-            ready_vec[i] = used[i] && entries[i].src1_ready && entries[i].src2_ready;
+            ready_vec[i] = used[i] &&
+                           entries[i].src1_ready &&
+                           entries[i].src2_ready &&
+                           (entries[i].src3_ready ||
+                            !entries[i].datapath.src3_is_fp);
         end
     end
 
@@ -60,9 +79,23 @@ module rs #(
         .idx  (issue_idx)
     );
 
-    assign out_if.valid = ready_valid;
-    assign out_if.data  = ready_valid ? entries[issue_idx] : '0;
     assign in_if.ready  = SINGLE_ENTRY ? !any_used : free_valid;
+
+    // Use a statically expanded mux instead of dynamically indexing a packed
+    // struct array. XSim 2019.1 can otherwise retain the previous entry when
+    // only issue_idx changes, duplicating one issue while deleting another.
+    always_comb begin
+        out_if.valid = ready_valid;
+        out_if.data  = '0;
+
+        // Descending order lets the lowest ready index win without using a
+        // dynamic array subscript in the data path.
+        for (int i = RS_DEPTH-1; i >= 0; i--) begin
+            if (ready_vec[i]) begin
+                out_if.data = entries[i];
+            end
+        end
+    end
 
     always_comb begin
         any_used = 1'b0;
@@ -78,29 +111,47 @@ module rs #(
         // that the instruction is inserted into the RS.
         if (wb_valid) begin
             if (!enqueue_entry.src1_ready &&
+                domain_match(wb_is_fp, enqueue_entry.datapath.src1_is_fp) &&
                 enqueue_entry.datapath.src_reg_1p == wb_preg) begin
                 enqueue_entry.src1_ready = 1'b1;
                 enqueue_entry.datapath.src1_value = wb_result;
             end
 
             if (!enqueue_entry.src2_ready &&
+                domain_match(wb_is_fp, enqueue_entry.datapath.src2_is_fp) &&
                 enqueue_entry.datapath.src_reg_2p == wb_preg) begin
                 enqueue_entry.src2_ready = 1'b1;
                 enqueue_entry.datapath.src2_value = wb_result;
+            end
+
+            if (!enqueue_entry.src3_ready &&
+                domain_match(wb_is_fp, enqueue_entry.datapath.src3_is_fp) &&
+                enqueue_entry.datapath.src_reg_3p == wb_preg) begin
+                enqueue_entry.src3_ready = 1'b1;
+                enqueue_entry.datapath.src3_value = wb_result;
             end
         end
 
         if (wb1_valid) begin
             if (!enqueue_entry.src1_ready &&
+                domain_match(wb1_is_fp, enqueue_entry.datapath.src1_is_fp) &&
                 enqueue_entry.datapath.src_reg_1p == wb1_preg) begin
                 enqueue_entry.src1_ready = 1'b1;
                 enqueue_entry.datapath.src1_value = wb1_result;
             end
 
             if (!enqueue_entry.src2_ready &&
+                domain_match(wb1_is_fp, enqueue_entry.datapath.src2_is_fp) &&
                 enqueue_entry.datapath.src_reg_2p == wb1_preg) begin
                 enqueue_entry.src2_ready = 1'b1;
                 enqueue_entry.datapath.src2_value = wb1_result;
+            end
+
+            if (!enqueue_entry.src3_ready &&
+                domain_match(wb1_is_fp, enqueue_entry.datapath.src3_is_fp) &&
+                enqueue_entry.datapath.src_reg_3p == wb1_preg) begin
+                enqueue_entry.src3_ready = 1'b1;
+                enqueue_entry.datapath.src3_value = wb1_result;
             end
         end
     end
@@ -138,15 +189,24 @@ module rs #(
                 for (int i = 0; i < RS_DEPTH; i++) begin
                     if (used[i]) begin
                         if (!entries[i].src1_ready &&
+                            domain_match(wb_is_fp, entries[i].datapath.src1_is_fp) &&
                             entries[i].datapath.src_reg_1p == wb_preg) begin
                             entries[i].src1_ready <= 1'b1;
                             entries[i].datapath.src1_value <= wb_result;
                         end
 
                         if (!entries[i].src2_ready &&
+                            domain_match(wb_is_fp, entries[i].datapath.src2_is_fp) &&
                             entries[i].datapath.src_reg_2p == wb_preg) begin
                             entries[i].src2_ready <= 1'b1;
                             entries[i].datapath.src2_value <= wb_result;
+                        end
+
+                        if (!entries[i].src3_ready &&
+                            domain_match(wb_is_fp, entries[i].datapath.src3_is_fp) &&
+                            entries[i].datapath.src_reg_3p == wb_preg) begin
+                            entries[i].src3_ready <= 1'b1;
+                            entries[i].datapath.src3_value <= wb_result;
                         end
                     end
                 end
@@ -156,22 +216,36 @@ module rs #(
                 for (int i = 0; i < RS_DEPTH; i++) begin
                     if (used[i]) begin
                         if (!entries[i].src1_ready &&
+                            domain_match(wb1_is_fp, entries[i].datapath.src1_is_fp) &&
                             entries[i].datapath.src_reg_1p == wb1_preg) begin
                             entries[i].src1_ready <= 1'b1;
                             entries[i].datapath.src1_value <= wb1_result;
                         end
 
                         if (!entries[i].src2_ready &&
+                            domain_match(wb1_is_fp, entries[i].datapath.src2_is_fp) &&
                             entries[i].datapath.src_reg_2p == wb1_preg) begin
                             entries[i].src2_ready <= 1'b1;
                             entries[i].datapath.src2_value <= wb1_result;
+                        end
+
+                        if (!entries[i].src3_ready &&
+                            domain_match(wb1_is_fp, entries[i].datapath.src3_is_fp) &&
+                            entries[i].datapath.src_reg_3p == wb1_preg) begin
+                            entries[i].src3_ready <= 1'b1;
+                            entries[i].datapath.src3_value <= wb1_result;
                         end
                     end
                 end
             end
 
             if (out_if.valid && out_if.ready) begin
-                used[issue_idx] <= 1'b0;
+                // A same-cycle enqueue may immediately reuse the issuing
+                // slot. Preserve the newly written entry in that case.
+                if (!(in_if.valid && in_if.ready &&
+                      (free_idx == issue_idx))) begin
+                    used[issue_idx] <= 1'b0;
+                end
             end
         end
     end

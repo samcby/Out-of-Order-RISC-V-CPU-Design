@@ -4,12 +4,15 @@ module rob_2w (
     input  logic                           complete_en0,
     input  defines_pkg::rob_tag_t          complete_tag0,
     input  logic [defines_pkg::WIDTH-1:0]  complete_result0,
+    input  logic [4:0]                     complete_fp_flags0,
     input  logic                           complete_en1,
     input  defines_pkg::rob_tag_t          complete_tag1,
     input  logic [defines_pkg::WIDTH-1:0]  complete_result1,
+    input  logic [4:0]                     complete_fp_flags1,
     input  logic                           complete_en2,
     input  defines_pkg::rob_tag_t          complete_tag2,
     input  logic [defines_pkg::WIDTH-1:0]  complete_result2,
+    input  logic [4:0]                     complete_fp_flags2,
 
     input  logic                           commit_en0,
     input  logic                           commit_en1,
@@ -70,6 +73,14 @@ module rob_2w (
     logic [ROB_DEPTH-1:0] survive_vec;
     rob_count_t survive_count;
     rob_idx_t tail_after_squash;
+
+    function automatic logic [4:0] known_flags(input logic [4:0] flags);
+    begin
+        for (int bit_idx = 0; bit_idx < 5; bit_idx++) begin
+            known_flags[bit_idx] = (flags[bit_idx] === 1'b1);
+        end
+    end
+    endfunction
 
     // Capacity must be computed from the offered packet shape, independent
     // of the valid/ready handshake. Including rob_packet_if.valid here forms
@@ -219,14 +230,20 @@ module rob_2w (
             if (complete_en0 && complete_hit0) begin
                 entries[complete_idx0].datapath.complete <= 1'b1;
                 entries[complete_idx0].datapath.result <= complete_result0;
+                entries[complete_idx0].datapath.fp_flags <=
+                    known_flags(complete_fp_flags0);
             end
             if (complete_en1 && complete_hit1) begin
                 entries[complete_idx1].datapath.complete <= 1'b1;
                 entries[complete_idx1].datapath.result <= complete_result1;
+                entries[complete_idx1].datapath.fp_flags <=
+                    known_flags(complete_fp_flags1);
             end
             if (complete_en2 && complete_hit2) begin
                 entries[complete_idx2].datapath.complete <= 1'b1;
                 entries[complete_idx2].datapath.result <= complete_result2;
+                entries[complete_idx2].datapath.fp_flags <=
+                    known_flags(complete_fp_flags2);
             end
 
             if (resolve_en) begin

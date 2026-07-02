@@ -1,10 +1,14 @@
+`timescale 1ns / 1ps
+
 module memory_order_queue #(
     parameter int DEPTH = defines_pkg::RS_DEPTH
 )(
     input  logic                           wb_valid,
+    input  logic                           wb_is_fp,
     input  defines_pkg::preg_t             wb_preg,
     input  logic [defines_pkg::WIDTH-1:0]  wb_result,
     input  logic                           wb1_valid,
+    input  logic                           wb1_is_fp,
     input  defines_pkg::preg_t             wb1_preg,
     input  logic [defines_pkg::WIDTH-1:0]  wb1_result,
 
@@ -49,6 +53,17 @@ module memory_order_queue #(
     logic queue_to_head_fire;
     lsu_rs_t enqueue_entry;
 
+    function automatic logic domain_match(
+        input logic writeback_is_fp,
+        input logic source_is_fp
+    );
+    begin
+        domain_match =
+            ((source_is_fp === 1'b1) ? 1'b1 : 1'b0) ==
+            ((writeback_is_fp === 1'b1) ? 1'b1 : 1'b0);
+    end
+    endfunction
+
     always_comb begin
         free_valid = 1'b0;
         free_idx = '0;
@@ -82,11 +97,13 @@ module memory_order_queue #(
 
             if (wb_valid) begin
                 if (!oldest_entry.src1_ready &&
+                    domain_match(wb_is_fp, oldest_entry.datapath.src1_is_fp) &&
                     oldest_entry.datapath.src_reg_1p == wb_preg) begin
                     oldest_entry.src1_ready = 1'b1;
                     oldest_entry.datapath.src1_value = wb_result;
                 end
                 if (!oldest_entry.src2_ready &&
+                    domain_match(wb_is_fp, oldest_entry.datapath.src2_is_fp) &&
                     oldest_entry.datapath.src_reg_2p == wb_preg) begin
                     oldest_entry.src2_ready = 1'b1;
                     oldest_entry.datapath.src2_value = wb_result;
@@ -95,11 +112,13 @@ module memory_order_queue #(
 
             if (wb1_valid) begin
                 if (!oldest_entry.src1_ready &&
+                    domain_match(wb1_is_fp, oldest_entry.datapath.src1_is_fp) &&
                     oldest_entry.datapath.src_reg_1p == wb1_preg) begin
                     oldest_entry.src1_ready = 1'b1;
                     oldest_entry.datapath.src1_value = wb1_result;
                 end
                 if (!oldest_entry.src2_ready &&
+                    domain_match(wb1_is_fp, oldest_entry.datapath.src2_is_fp) &&
                     oldest_entry.datapath.src_reg_2p == wb1_preg) begin
                     oldest_entry.src2_ready = 1'b1;
                     oldest_entry.datapath.src2_value = wb1_result;
@@ -117,11 +136,13 @@ module memory_order_queue #(
 
         if (wb_valid) begin
             if (!enqueue_entry.src1_ready &&
+                domain_match(wb_is_fp, enqueue_entry.datapath.src1_is_fp) &&
                 enqueue_entry.datapath.src_reg_1p == wb_preg) begin
                 enqueue_entry.src1_ready = 1'b1;
                 enqueue_entry.datapath.src1_value = wb_result;
             end
             if (!enqueue_entry.src2_ready &&
+                domain_match(wb_is_fp, enqueue_entry.datapath.src2_is_fp) &&
                 enqueue_entry.datapath.src_reg_2p == wb_preg) begin
                 enqueue_entry.src2_ready = 1'b1;
                 enqueue_entry.datapath.src2_value = wb_result;
@@ -130,11 +151,13 @@ module memory_order_queue #(
 
         if (wb1_valid) begin
             if (!enqueue_entry.src1_ready &&
+                domain_match(wb1_is_fp, enqueue_entry.datapath.src1_is_fp) &&
                 enqueue_entry.datapath.src_reg_1p == wb1_preg) begin
                 enqueue_entry.src1_ready = 1'b1;
                 enqueue_entry.datapath.src1_value = wb1_result;
             end
             if (!enqueue_entry.src2_ready &&
+                domain_match(wb1_is_fp, enqueue_entry.datapath.src2_is_fp) &&
                 enqueue_entry.datapath.src_reg_2p == wb1_preg) begin
                 enqueue_entry.src2_ready = 1'b1;
                 enqueue_entry.datapath.src2_value = wb1_result;
@@ -216,11 +239,13 @@ module memory_order_queue #(
                 for (int i = 0; i < DEPTH; i++) begin
                     if (used[i]) begin
                         if (!entries[i].src1_ready &&
+                            domain_match(wb_is_fp, entries[i].datapath.src1_is_fp) &&
                             entries[i].datapath.src_reg_1p == wb_preg) begin
                             entries[i].src1_ready <= 1'b1;
                             entries[i].datapath.src1_value <= wb_result;
                         end
                         if (!entries[i].src2_ready &&
+                            domain_match(wb_is_fp, entries[i].datapath.src2_is_fp) &&
                             entries[i].datapath.src_reg_2p == wb_preg) begin
                             entries[i].src2_ready <= 1'b1;
                             entries[i].datapath.src2_value <= wb_result;
@@ -230,11 +255,13 @@ module memory_order_queue #(
 
                 if (head_occupied_q) begin
                     if (!head_entry_q.src1_ready &&
+                        domain_match(wb_is_fp, head_entry_q.datapath.src1_is_fp) &&
                         head_entry_q.datapath.src_reg_1p == wb_preg) begin
                         head_entry_q.src1_ready <= 1'b1;
                         head_entry_q.datapath.src1_value <= wb_result;
                     end
                     if (!head_entry_q.src2_ready &&
+                        domain_match(wb_is_fp, head_entry_q.datapath.src2_is_fp) &&
                         head_entry_q.datapath.src_reg_2p == wb_preg) begin
                         head_entry_q.src2_ready <= 1'b1;
                         head_entry_q.datapath.src2_value <= wb_result;
@@ -246,11 +273,13 @@ module memory_order_queue #(
                 for (int i = 0; i < DEPTH; i++) begin
                     if (used[i]) begin
                         if (!entries[i].src1_ready &&
+                            domain_match(wb1_is_fp, entries[i].datapath.src1_is_fp) &&
                             entries[i].datapath.src_reg_1p == wb1_preg) begin
                             entries[i].src1_ready <= 1'b1;
                             entries[i].datapath.src1_value <= wb1_result;
                         end
                         if (!entries[i].src2_ready &&
+                            domain_match(wb1_is_fp, entries[i].datapath.src2_is_fp) &&
                             entries[i].datapath.src_reg_2p == wb1_preg) begin
                             entries[i].src2_ready <= 1'b1;
                             entries[i].datapath.src2_value <= wb1_result;
@@ -260,11 +289,13 @@ module memory_order_queue #(
 
                 if (head_occupied_q) begin
                     if (!head_entry_q.src1_ready &&
+                        domain_match(wb1_is_fp, head_entry_q.datapath.src1_is_fp) &&
                         head_entry_q.datapath.src_reg_1p == wb1_preg) begin
                         head_entry_q.src1_ready <= 1'b1;
                         head_entry_q.datapath.src1_value <= wb1_result;
                     end
                     if (!head_entry_q.src2_ready &&
+                        domain_match(wb1_is_fp, head_entry_q.datapath.src2_is_fp) &&
                         head_entry_q.datapath.src_reg_2p == wb1_preg) begin
                         head_entry_q.src2_ready <= 1'b1;
                         head_entry_q.datapath.src2_value <= wb1_result;

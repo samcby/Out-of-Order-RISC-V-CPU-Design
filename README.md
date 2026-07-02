@@ -267,6 +267,7 @@ list_regression_suites
 run_regression quick
 run_regression multi_issue
 run_regression memory
+run_regression performance
 run_regression full
 ```
 
@@ -275,6 +276,45 @@ starting the next one.
 
 See [`REGRESSION.md`](REGRESSION.md) for the exact suite contents and the
 retired-test coverage mapping.
+
+### IPC Characterization
+
+`top_packet_backend` has an `ENABLE_2WIDE` parameter. Its default value is
+`1`, preserving the mainline architecture. Setting it to `0` simultaneously
+limits fetch, issue, and commit to one instruction per cycle while retaining
+the same predictor, queues, execution units, cache, and memory latency.
+
+The comparison test is:
+
+```text
+tb_top_packet_backend_ipc_compare
+```
+
+It runs 1-wide and 2-wide instances side by side on identical programs and
+reports:
+
+- active cycles
+- committed instructions
+- IPC
+- 2-wide speedup over the 1-wide baseline
+- dual-fetch, dual-issue, and dual-commit activity
+
+The initial workloads cover independent ALU instructions, a dependency chain,
+and paired memory-plus-ALU traffic. Measurement begins after program loading
+and ends when the same sentinel instruction commits in each core.
+
+Measured with Vivado Simulator 2019.1:
+
+| Workload | 2-wide IPC | 1-wide IPC | Cycle speedup |
+| --- | ---: | ---: | ---: |
+| Independent ALU | 1.368 | 0.812 | 1.684x |
+| Dependency chain | 0.481 | 0.473 | 1.019x |
+| Memory plus ALU | 0.286 | 0.243 | 1.175x |
+
+The independent workload demonstrates the available superscalar throughput.
+The dependency chain remains effectively single-issue, as expected from its
+RAW dependency on every instruction. The mixed workload gains from paired
+MEM+ALU issue but remains limited by the single blocking LSU and cache path.
 
 ## Opening the Project
 
@@ -309,22 +349,119 @@ changes.
 - No virtual memory
 - Machine-mode-oriented privilege support only
 - Interrupts wait for a ROB-empty safe point
-- No floating-point extension yet
+  - `mstatus.FS` is software-visible and transitions to Dirty when committed
+    FP work modifies architectural FP state
+  - trapping FP instructions while `mstatus.FS=Off` is not yet enforced
 
-## Next Architecture Stage
+## RV32F Bring-Up
 
-The 2-wide integer architecture is functionally complete enough to serve as
-the base for the next major feature. Before floating-point work begins, the
-recommended closeout is:
+The first floating-point milestone now establishes the contracts needed by the
+OoO backend:
 
-1. Run the `full` regression group before the next architecture transition.
-2. Record IPC and dual-issue utilization on representative programs.
-3. Establish the packet backend as the baseline for floating-point work.
+- complete RV32F instruction-class decoding
+- explicit integer-to-FP and FP-to-integer register routing
+- independent 128-entry floating-point physical register storage
+- two FP writeback ports and same-packet readiness handling
+- two-wide FP RAT/free-pool allocation with RAW and WAW bypass
+- FP checkpoint save/restore synchronized with integer control flow
+- precise reclamation of retired FP mappings, including architectural `f0`
+- `fflags`, `frm`, and `fcsr` state with sticky exception flags
+- illegal detection for reserved rounding-mode encodings
+- ROB destination-domain metadata for integer versus FP retirement
+- FLW/FSW transport through the production ordered LSU and cache
+- commit-gated and squash-safe floating-point stores
+- register-domain-aware RS/MOQ wakeup and writeback
+- integrated integer and FP physical register files
+- end-to-end FLW/FSW execution from the packet frontend
+- writable and renameable architectural `f0`
+- exact FP execution integrated into both ALU issue slots
+- `FSGNJ.S`, `FSGNJN.S`, and `FSGNJX.S`
+- `FMIN.S` and `FMAX.S`, including NaN and signed-zero selection
+- `FEQ.S`, `FLT.S`, and `FLE.S`, including NaN and signed-zero behavior
+- `FCLASS.S`, `FMV.X.W`, and `FMV.W.X`
+- `FADD.S` and `FSUB.S` with RNE, RTZ, RDN, RUP, and RMM
+- `FMUL.S` with the same static and dynamic rounding modes
+- `FCVT.W.S`, `FCVT.WU.S`, `FCVT.S.W`, and `FCVT.S.WU`
+- shared multi-cycle `FDIV.S` and `FSQRT.S`
+- single-rounding `FMADD.S`, `FMSUB.S`, `FNMSUB.S`, and `FNMADD.S`
+- three-source FP rename, PRF reads, RS readiness, and dual-writeback wakeup
+- cross-domain integer/FP dependencies through rename, wakeup, and writeback
+- dynamic rounding through `frm` when the instruction uses `rm=111`
+- binary32 NaN, infinity, subnormal, signed-zero, overflow, underflow, and
+  inexact handling for add/subtract/multiply/divide/square root
+- divide-by-zero and invalid-operation flag generation for long FP operations
+- long-operation backpressure, branch-squash cancellation, and precise
+  completion through the ROB
+- independent three-cycle FP pipelines on both ALU issue lanes
+- one-result-per-cycle FP pipeline throughput with completion backpressure
+- speculation-mask tracking and wrong-path cancellation inside the FP pipelines
+- integer-to-FP and FP-to-integer dependency wakeup through the normal OoO path
+- per-instruction FP exception flags carried in the ROB
+- precise `fflags` updates at retirement, including dual-commit flag merging
+- speculative FP exceptions discarded by branch recovery
+- software-visible `fflags`, `frm`, and `fcsr` through serialized CSR accesses
 
-The RTL already counts committed instructions, issue mix, dual issue, stalls,
-and dual commit. A future IPC comparison only needs a clearly defined cycle
-window and a scalar-width compatibility run of the same program; it does not
-require another backend redesign.
+Run this milestone with:
+
+```tcl
+run_regression floating
+```
+
+The floating-point arithmetic cores are also checked against Berkeley
+SoftFloat 3e using 10,880 deterministic vectors. The differential test covers
+all five RISC-V rounding modes, arithmetic, divide/square root, all four fused
+multiply-add sign variants, integer conversions, comparisons, result bits,
+and `NV/DZ/OF/UF/NX` flags:
+
+```tcl
+run_regression softfloat
+```
+
+The checked-in vector file lets Vivado run this test without a C compiler or a
+local SoftFloat installation. To regenerate it with the fixed default seed:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/generate_softfloat_vectors.ps1
+```
+
+The script downloads SoftFloat into the workspace-level `.deps` directory,
+builds its RISC-V specialization with MinGW, and rewrites
+`fp_softfloat_vectors.txt`. Use `-RandomVectorsPerCase` and `-Seed` to run a
+larger or differently seeded campaign before a release.
+
+The implemented instruction-level datapath now covers the RV32F computational,
+conversion, comparison, move/classification, and load/store families. Future
+FP work is primarily validation and implementation quality: differential
+testing against a reference model, full `mstatus.FS=Off` enforcement, and
+replacing the current divide/square-root numeric core with a smaller
+digit-recurrence datapath without changing its shared multi-cycle
+issue/completion contract.
+
+## Long-Program Verification Readiness
+
+The packet backend exposes the infrastructure needed by a future
+`riscv-dv`/Spike differential testbench without changing the existing smoke
+tests:
+
+- `IMEM_DEPTH_BYTES` and `DMEM_WORDS` top-level parameters propagate to the
+  fetch memory and cache backing memory
+- the default 4 KiB instruction / 1 KiB data memories remain unchanged for
+  fast smoke regressions
+- a long-program testbench can select 64 KiB or larger memories per instance
+- the ROB preserves the retiring PC and instruction word
+- two registered `retire_trace_t` records report in-order retirement with a
+  monotonic 64-bit order number
+- each trace record includes PC, instruction, integer/FP destination, write
+  value, FP flags, branch/store classification, and the internal ROB tag
+
+The generic ELF/HEX loader, completion protocol, Spike trace converter, and
+`riscv-dv` testbench intentionally belong to the next milestone. See
+`RISCV_DV_INTEGRATION.md` for the integration contract.
+
+The RTL counts active cycles, committed instructions, issue mix, dual issue,
+stalls, and dual commit. The configurable width mode provides a controlled
+single-width baseline without relying on the structurally different legacy
+`top.sv`.
 
 Generated Vivado output such as `.Xil`, `.runs`, `.sim`, `.cache`, logs,
 journals, and waveform databases should not be committed.

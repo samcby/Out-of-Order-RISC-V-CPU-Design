@@ -23,6 +23,7 @@ module lsu #(
     output defines_pkg::rob_tag_t          resp_tag,
     output defines_pkg::preg_t             resp_preg,
     output logic                           resp_reg_write,
+    output logic                           resp_dest_is_fp,
     output logic [defines_pkg::WIDTH-1:0]  resp_result
 );
     import defines_pkg::*;
@@ -440,12 +441,14 @@ module lsu #(
             resp_tag       <= '0;
             resp_preg      <= '0;
             resp_reg_write <= 1'b0;
+            resp_dest_is_fp <= 1'b0;
             resp_result    <= '0;
         end else begin
             resp_valid     <= 1'b0;
             resp_tag       <= '0;
             resp_preg      <= '0;
             resp_reg_write <= 1'b0;
+            resp_dest_is_fp <= 1'b0;
             resp_result    <= '0;
             store_drain_wait_q <= 1'b0;
 
@@ -496,7 +499,9 @@ module lsu #(
                     resp_tag       <= pending_datapath.rob_tag;
                     resp_preg      <= pending_datapath.new_des_preg;
                     resp_reg_write <= pending_control.mem_read &&
-                                      (pending_datapath.new_des_preg != '0);
+                                      (pending_datapath.dest_is_fp ||
+                                       (pending_datapath.new_des_preg != '0));
+                    resp_dest_is_fp <= pending_datapath.dest_is_fp;
                     resp_result    <= pending_control.mem_read ? load_result_comb : '0;
 
                     pending_valid <= 1'b0;
@@ -509,7 +514,9 @@ module lsu #(
                 resp_valid     <= 1'b1;
                 resp_tag       <= pending_datapath.rob_tag;
                 resp_preg      <= pending_datapath.new_des_preg;
-                resp_reg_write <= pending_datapath.new_des_preg != '0;
+                resp_reg_write <= pending_datapath.dest_is_fp ||
+                                  (pending_datapath.new_des_preg != '0);
+                resp_dest_is_fp <= pending_datapath.dest_is_fp;
                 resp_result    <= load_result_comb;
 
                 pending_valid <= 1'b0;

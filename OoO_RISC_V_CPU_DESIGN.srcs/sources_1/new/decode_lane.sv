@@ -24,8 +24,14 @@ module decode_lane #(
     logic       sys_en;
     logic [2:0] sys_op;
     logic [3:0] alu_op;
+    logic       fp_en;
+    logic [4:0] fp_op;
     logic [1:0] fu_type;
     logic       rename;
+    logic       src1_is_fp;
+    logic       src2_is_fp;
+    logic       src3_is_fp;
+    logic       dest_is_fp;
 
     logic [WIDTH-1:0] imm;
 
@@ -38,28 +44,47 @@ module decode_lane #(
 
         out_data.datapath.pc          = in_data.pc;
         out_data.datapath.rd          = in_data.instr[11:7];
+        out_data.datapath.src1_is_fp  = src1_is_fp;
+        out_data.datapath.src2_is_fp  = src2_is_fp;
+        out_data.datapath.src3_is_fp  = src3_is_fp;
+        out_data.datapath.dest_is_fp  = dest_is_fp;
         out_data.datapath.imm         = imm;
         out_data.datapath.instr       = in_data.instr;
         out_data.datapath.pred_taken  = in_data.pred_taken;
         out_data.datapath.pred_target = in_data.pred_target;
 
         unique case (op_code)
-            7'b0110011: begin
+            7'b1000011,
+            7'b1000111,
+            7'b1001011,
+            7'b1001111: begin
                 out_data.datapath.rs1 = in_data.instr[19:15];
                 out_data.datapath.rs2 = in_data.instr[24:20];
+                out_data.datapath.rs3 = in_data.instr[31:27];
+            end
+
+            7'b0110011,
+            7'b1010011: begin
+                out_data.datapath.rs1 = in_data.instr[19:15];
+                out_data.datapath.rs2 = in_data.instr[24:20];
+                out_data.datapath.rs3 = '0;
             end
 
             7'b0010011,
             7'b0000011,
+            7'b0000111,
             7'b1100111: begin
                 out_data.datapath.rs1 = in_data.instr[19:15];
                 out_data.datapath.rs2 = '0;
+                out_data.datapath.rs3 = '0;
             end
 
             7'b0100011,
+            7'b0100111,
             7'b1100011: begin
                 out_data.datapath.rs1 = in_data.instr[19:15];
                 out_data.datapath.rs2 = in_data.instr[24:20];
+                out_data.datapath.rs3 = '0;
             end
 
             7'b1110011: begin
@@ -67,11 +92,13 @@ module decode_lane #(
                 out_data.datapath.rs1 = (funct3 != 3'b000 && !funct3[2]) ?
                                         in_data.instr[19:15] : '0;
                 out_data.datapath.rs2 = '0;
+                out_data.datapath.rs3 = '0;
             end
 
             default: begin
                 out_data.datapath.rs1 = '0;
                 out_data.datapath.rs2 = '0;
+                out_data.datapath.rs3 = '0;
             end
         endcase
 
@@ -80,6 +107,9 @@ module decode_lane #(
 
         out_data.control_signal.rs_control_signal.alu_control_signal.reg_write   = reg_write;
         out_data.control_signal.rs_control_signal.alu_control_signal.alu_src     = alu_src;
+        out_data.control_signal.rs_control_signal.alu_control_signal.fp_en       = fp_en;
+        out_data.control_signal.rs_control_signal.alu_control_signal.fp_op       = fp_op;
+        out_data.control_signal.rs_control_signal.alu_control_signal.fp_rm       = funct3;
         out_data.control_signal.rs_control_signal.alu_control_signal.csr_en      = csr_en;
         out_data.control_signal.rs_control_signal.alu_control_signal.csr_use_imm = csr_use_imm;
         out_data.control_signal.rs_control_signal.alu_control_signal.csr_op      = csr_op;
@@ -132,8 +162,14 @@ module decode_lane #(
         .sys_en      (sys_en),
         .sys_op      (sys_op),
         .alu_op      (alu_op),
+        .fp_en       (fp_en),
+        .fp_op       (fp_op),
         .fu_type     (fu_type),
-        .rename      (rename)
+        .rename      (rename),
+        .src1_is_fp  (src1_is_fp),
+        .src2_is_fp  (src2_is_fp),
+        .src3_is_fp  (src3_is_fp),
+        .dest_is_fp  (dest_is_fp)
     );
 
 endmodule

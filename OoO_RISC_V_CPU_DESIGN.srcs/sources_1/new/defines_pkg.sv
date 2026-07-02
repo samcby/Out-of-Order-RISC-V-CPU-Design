@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 package defines_pkg;
 
     parameter int WIDTH = 32;
@@ -82,6 +84,9 @@ package defines_pkg;
     typedef struct packed {
         logic reg_write;
         logic alu_src;
+        logic fp_en;
+        logic [4:0] fp_op;
+        logic [2:0] fp_rm;
         logic csr_en;
         logic csr_use_imm;
         logic [1:0] csr_op;
@@ -128,7 +133,12 @@ package defines_pkg;
         logic [WIDTH-1:0] pc;
         areg_t            rs1;
         areg_t            rs2;
+        areg_t            rs3;
         areg_t            rd;
+        logic             src1_is_fp;
+        logic             src2_is_fp;
+        logic             src3_is_fp;
+        logic             dest_is_fp;
         logic [WIDTH-1:0] imm;
         logic [WIDTH-1:0] instr;
         logic             pred_taken;
@@ -143,11 +153,17 @@ package defines_pkg;
     typedef struct packed {
         preg_t     src_reg_1p;
         preg_t     src_reg_2p;
+        preg_t     src_reg_3p;
         preg_t     new_des_preg;
+        logic      src1_is_fp;
+        logic      src2_is_fp;
+        logic      src3_is_fp;
+        logic      dest_is_fp;
         cp_id_t    checkpoint_id;
         cp_mask_t  speculation_mask;
         logic [WIDTH-1:0] src1_value;
         logic [WIDTH-1:0] src2_value;
+        logic [WIDTH-1:0] src3_value;
         rob_tag_t  rob_tag;
         logic [WIDTH-1:0] imm;
         logic [WIDTH-1:0] instr;
@@ -161,6 +177,7 @@ package defines_pkg;
         rs_datapath_t datapath;
         logic         src1_ready;
         logic         src2_ready;
+        logic         src3_ready;
     } alu_rs_t;
 
     typedef struct packed {
@@ -168,6 +185,7 @@ package defines_pkg;
         rs_datapath_t datapath;
         logic         src1_ready;
         logic         src2_ready;
+        logic         src3_ready;
     } lsu_rs_t;
 
     typedef struct packed {
@@ -175,6 +193,7 @@ package defines_pkg;
         rs_datapath_t    datapath;
         logic            src1_ready;
         logic            src2_ready;
+        logic            src3_ready;
     } branch_rs_t;
 
     typedef struct packed {
@@ -182,17 +201,22 @@ package defines_pkg;
         rs_datapath_t datapath;
         logic         src1_ready;
         logic         src2_ready;
+        logic         src3_ready;
     } rs_t;
 
     typedef struct packed {
         rob_tag_t rob_tag;
         preg_t    new_des_preg;
         preg_t    old_des_preg;
+        logic     dest_is_fp;
         cp_id_t   checkpoint_id;
         cp_mask_t speculation_mask;
         areg_t    rd;
         logic     complete;
         logic [WIDTH-1:0] result;
+        logic [4:0] fp_flags;
+        logic [WIDTH-1:0] pc;
+        logic [WIDTH-1:0] instr;
     } rob_datapath_t;
 
     typedef struct packed {
@@ -240,6 +264,21 @@ package defines_pkg;
         lsu_control_t    lsu;
         branch_control_t branch;
     } issue_ctrl_t;
+
+    typedef struct packed {
+        logic             valid;
+        logic [63:0]      order;
+        logic [WIDTH-1:0] pc;
+        logic [WIDTH-1:0] instr;
+        logic             rd_wen;
+        logic             rd_is_fp;
+        areg_t            rd;
+        logic [WIDTH-1:0] rd_wdata;
+        logic [4:0]       fp_flags;
+        logic             is_store;
+        logic             is_branch;
+        rob_tag_t         rob_tag;
+    } retire_trace_t;
 
     typedef struct packed {
         issue_ctrl_t control_signal;

@@ -1,30 +1,42 @@
-module dispatch_packet_stage (
+`timescale 1ns / 1ps
+
+module dispatch_packet_stage #(
+    parameter bit ENABLE_2WIDE = 1'b1
+)(
     input  logic                           lane0_src1_ready,
     input  logic                           lane0_src2_ready,
+    input  logic                           lane0_src3_ready,
     input  logic [defines_pkg::WIDTH-1:0]  lane0_src1_value,
     input  logic [defines_pkg::WIDTH-1:0]  lane0_src2_value,
+    input  logic [defines_pkg::WIDTH-1:0]  lane0_src3_value,
     input  logic                           lane1_src1_ready,
     input  logic                           lane1_src2_ready,
+    input  logic                           lane1_src3_ready,
     input  logic [defines_pkg::WIDTH-1:0]  lane1_src1_value,
     input  logic [defines_pkg::WIDTH-1:0]  lane1_src2_value,
+    input  logic [defines_pkg::WIDTH-1:0]  lane1_src3_value,
 
     input  logic                           wb_valid,
+    input  logic                           wb_is_fp,
     input  defines_pkg::preg_t             wb_preg,
     input  defines_pkg::rob_tag_t          wb_tag,
     input  logic [defines_pkg::WIDTH-1:0]  wb_result,
     input  logic                           wb1_valid,
+    input  logic                           wb1_is_fp,
     input  defines_pkg::preg_t             wb1_preg,
     input  defines_pkg::rob_tag_t          wb1_tag,
     input  logic [defines_pkg::WIDTH-1:0]  wb1_result,
     input  logic                           complete_valid,
     input  defines_pkg::rob_tag_t          complete_tag,
     input  logic [defines_pkg::WIDTH-1:0]  complete_result,
+    input  logic [4:0]                     complete_fp_flags,
     input  logic                           branch_complete_valid,
     input  defines_pkg::rob_tag_t          branch_complete_tag,
     input  logic [defines_pkg::WIDTH-1:0]  branch_complete_result,
     input  logic                           lane1_complete_valid,
     input  defines_pkg::rob_tag_t          lane1_complete_tag,
     input  logic [defines_pkg::WIDTH-1:0]  lane1_complete_result,
+    input  logic [4:0]                     lane1_complete_fp_flags,
 
     input  logic                           commit_en0,
     input  logic                           commit_en1,
@@ -83,12 +95,16 @@ module dispatch_packet_stage (
         .in_if(in_if),
         .lane0_src1_ready(lane0_src1_ready),
         .lane0_src2_ready(lane0_src2_ready),
+        .lane0_src3_ready(lane0_src3_ready),
         .lane0_src1_value(lane0_src1_value),
         .lane0_src2_value(lane0_src2_value),
+        .lane0_src3_value(lane0_src3_value),
         .lane1_src1_ready(lane1_src1_ready),
         .lane1_src2_ready(lane1_src2_ready),
+        .lane1_src3_ready(lane1_src3_ready),
         .lane1_src1_value(lane1_src1_value),
         .lane1_src2_value(lane1_src2_value),
+        .lane1_src3_value(lane1_src3_value),
         .csr_pending(csr_pending_q),
         .rob_packet_if(rob_packet_if.producer),
         .alu_if(alu_in_if.producer),
@@ -101,9 +117,11 @@ module dispatch_packet_stage (
         .T(alu_rs_t)
     ) u_rs_alu (
         .wb_valid(wb_valid),
+        .wb_is_fp(wb_is_fp),
         .wb_preg(wb_preg),
         .wb_result(wb_result),
         .wb1_valid(wb1_valid),
+        .wb1_is_fp(wb1_is_fp),
         .wb1_preg(wb1_preg),
         .wb1_result(wb1_result),
         .flush(flush),
@@ -119,9 +137,11 @@ module dispatch_packet_stage (
 
     memory_order_queue u_memory_order_queue (
         .wb_valid(wb_valid),
+        .wb_is_fp(wb_is_fp),
         .wb_preg(wb_preg),
         .wb_result(wb_result),
         .wb1_valid(wb1_valid),
+        .wb1_is_fp(wb1_is_fp),
         .wb1_preg(wb1_preg),
         .wb1_result(wb1_result),
         .flush(flush),
@@ -138,9 +158,11 @@ module dispatch_packet_stage (
         .OPERATION(FU_BRANCH)
     ) u_rs_branch (
         .wb_valid(wb_valid),
+        .wb_is_fp(wb_is_fp),
         .wb_preg(wb_preg),
         .wb_result(wb_result),
         .wb1_valid(wb1_valid),
+        .wb1_is_fp(wb1_is_fp),
         .wb1_preg(wb1_preg),
         .wb1_result(wb1_result),
         .fu_sel(fu_sel),
@@ -153,13 +175,17 @@ module dispatch_packet_stage (
         .out_if(branch_out_if.producer)
     );
 
-    issue_packet_arbiter u_issue_packet_arbiter (
+    issue_packet_arbiter #(
+        .ENABLE_2WIDE(ENABLE_2WIDE)
+    ) u_issue_packet_arbiter (
         .alu_if(alu_out_if.consumer),
         .alu1_if(alu_out1_if.consumer),
         .lsu_if(lsu_out_if.consumer),
         .branch_if(branch_out_if.consumer),
         .issue0_if(issue_if),
         .issue1_if(issue1_if),
+        .rob_head_valid(rob_head_valid),
+        .rob_head_tag(rob_head.datapath.rob_tag),
         .issue0_fu_sel(fu_sel),
         .issue1_fu_sel(issue1_fu_sel)
     );
@@ -169,12 +195,15 @@ module dispatch_packet_stage (
         .complete_en0(complete_valid),
         .complete_tag0(complete_tag),
         .complete_result0(complete_result),
+        .complete_fp_flags0(complete_fp_flags),
         .complete_en1(branch_complete_valid),
         .complete_tag1(branch_complete_tag),
         .complete_result1(branch_complete_result),
+        .complete_fp_flags1('0),
         .complete_en2(lane1_complete_valid),
         .complete_tag2(lane1_complete_tag),
         .complete_result2(lane1_complete_result),
+        .complete_fp_flags2(lane1_complete_fp_flags),
         .commit_en0(commit_en0),
         .commit_en1(commit_en1),
         .flush(flush),
