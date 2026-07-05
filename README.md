@@ -1,10 +1,10 @@
-# Out-of-Order RV32I CPU Design
+# Out-of-Order RV32IF CPU Design
 
 This repository contains a SystemVerilog implementation of a speculative,
-out-of-order RV32I processor developed in Vivado 2019.1. The current mainline
+out-of-order RV32IF processor developed in Vivado 2019.1. The current mainline
 is a packetized 2-wide superscalar core with register renaming, reservation
 stations, precise in-order retirement, branch recovery, machine-mode traps and
-interrupts, and a cached memory hierarchy.
+interrupts, IEEE-754 binary32 execution, and a cached memory hierarchy.
 
 The active design top is:
 
@@ -267,7 +267,9 @@ list_regression_suites
 run_regression quick
 run_regression multi_issue
 run_regression memory
+run_regression invariants
 run_regression performance
+run_regression stress
 run_regression full
 ```
 
@@ -275,7 +277,16 @@ The script changes only the `sim_1` top and closes each simulation before
 starting the next one.
 
 See [`REGRESSION.md`](REGRESSION.md) for the exact suite contents and the
-retired-test coverage mapping.
+retired-test coverage mapping. See
+[`VERIFICATION_COVERAGE.md`](VERIFICATION_COVERAGE.md) for requirement-level
+coverage, known gaps, and the release gate.
+
+### Simulation Invariants
+
+Critical internal invariants are checked automatically during simulation for
+the ROB, integer RAT, free pool, branch checkpoints, precise store buffer, and
+dual retirement interface. These assertions detect corruption at the cycle it
+occurs and are excluded from synthesis with `SYNTHESIS`.
 
 ### IPC Characterization
 
@@ -349,14 +360,13 @@ changes.
 - No virtual memory
 - Machine-mode-oriented privilege support only
 - Interrupts wait for a ROB-empty safe point
-  - `mstatus.FS` is software-visible and transitions to Dirty when committed
-    FP work modifies architectural FP state
-  - trapping FP instructions while `mstatus.FS=Off` is not yet enforced
+- `mstatus.FS` is software-visible and becomes Dirty when committed FP work
+  modifies architectural FP state
+- Trapping FP instructions while `mstatus.FS=Off` is not yet enforced
 
-## RV32F Bring-Up
+## RV32F Support
 
-The first floating-point milestone now establishes the contracts needed by the
-OoO backend:
+The floating-point implementation includes:
 
 - complete RV32F instruction-class decoding
 - explicit integer-to-FP and FP-to-integer register routing
@@ -437,26 +447,62 @@ replacing the current divide/square-root numeric core with a smaller
 digit-recurrence datapath without changing its shared multi-cycle
 issue/completion contract.
 
-## Long-Program Verification Readiness
+## Long-Program Stress Verification
 
-The packet backend exposes the infrastructure needed by a future
-`riscv-dv`/Spike differential testbench without changing the existing smoke
-tests:
+The packet backend includes a generator-independent long-program verification
+path:
 
 - `IMEM_DEPTH_BYTES` and `DMEM_WORDS` top-level parameters propagate to the
   fetch memory and cache backing memory
 - the default 4 KiB instruction / 1 KiB data memories remain unchanged for
   fast smoke regressions
-- a long-program testbench can select 64 KiB or larger memories per instance
+- the checked-in stress test selects 64 KiB instruction and data memories
 - the ROB preserves the retiring PC and instruction word
 - two registered `retire_trace_t` records report in-order retirement with a
   monotonic 64-bit order number
 - each trace record includes PC, instruction, integer/FP destination, write
   value, FP flags, branch/store classification, and the internal ROB tag
 
-The generic ELF/HEX loader, completion protocol, Spike trace converter, and
-`riscv-dv` testbench intentionally belong to the next milestone. See
-`RISCV_DV_INTEGRATION.md` for the integration contract.
+`tb_top_packet_backend_long_stress` loads a word-oriented HEX image directly,
+uses retirement of `x31=1` as its completion protocol, maintains an independent
+architectural GPR mirror, checks every retired PC/instruction against a strict
+ordered stream, checks every integer register write against a per-PC oracle,
+checks all final GPRs, detects retirement deadlock, and emits
+`rv32i_long_stress_retire.csv`.
+
+The default deterministic campaign contains 10,439 static RV32I instructions and
+mixes ALU dependencies, dual-issue opportunities, byte/halfword/word
+load-store traffic, taken and not-taken branches, `jal`, and `jalr`. With the
+default seed it retires 10,282 dynamic instructions in 15,555 active cycles
+(IPC 0.661) with 3,968 dual-retire cycles in Vivado Simulator 2019.1.
+
+The same 700-block campaign has also passed seeds `0x1892027`, `0x5eed1234`,
+and `0xc0ffee`, bringing the validated multi-seed total to 41,128 dynamic
+retirements.
+
+Regenerate it with:
+
+```powershell
+python scripts/generate_rv32i_long_stress.py
+```
+
+Select another deterministic workload with `--seed`, or change its length
+with `--blocks`:
+
+```powershell
+python scripts/generate_rv32i_long_stress.py --seed 0x5eed1234 --blocks 700
+```
+
+Then run:
+
+```tcl
+run_regression stress
+```
+
+External `riscv-dv`/Spike and ACT4 certification flows are not part of this
+release. Their simulator, toolchain, memory-map, and platform-contract
+requirements remain future verification work; no official certification pass
+is claimed.
 
 The RTL counts active cycles, committed instructions, issue mix, dual issue,
 stalls, and dual commit. The configurable width mode provides a controlled

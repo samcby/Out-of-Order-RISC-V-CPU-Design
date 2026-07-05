@@ -62,6 +62,7 @@ module rob_2w (
     rob_idx_t tail_next;
     rob_idx_t head_idx1;
     rob_idx_t head_next;
+    rob_idx_t head_after_pop;
 
     rob_idx_t complete_idx0;
     logic complete_hit0;
@@ -103,6 +104,7 @@ module rob_2w (
     assign pop_fire0 = commit_en0 && head_valid && head_complete;
     assign pop_fire1 = pop_fire0 && commit_en1 && head1_valid && head1_complete;
     assign pop_fire_count = {1'b0, pop_fire0} + {1'b0, pop_fire1};
+    assign head_after_pop = pop_fire0 ? head_next : head_q;
 
     always_comb begin
         int next_head_idx;
@@ -180,10 +182,12 @@ module rob_2w (
 
     always_comb begin
         survive_count = '0;
-        tail_after_squash = head_q;
+        tail_after_squash = head_after_pop;
 
         for (int i = 0; i < ROB_DEPTH; i++) begin
             survive_vec[i] = valid_bits[i] &&
+                             !(pop_fire0 && (head_q == i[ROB_IDX_W-1:0])) &&
+                             !(pop_fire1 && (head_idx1 == i[ROB_IDX_W-1:0])) &&
                              !(squash_en &&
                                entries[i].datapath.speculation_mask[squash_checkpoint_id]);
             if (survive_vec[i]) begin
@@ -192,12 +196,12 @@ module rob_2w (
         end
 
         if (survive_count == 0) begin
-            tail_after_squash = head_q;
+            tail_after_squash = head_after_pop;
         end else begin
-            tail_after_squash = head_q;
+            tail_after_squash = head_after_pop;
             for (int step = 0; step < ROB_DEPTH; step++) begin
                 int idx;
-                idx = (head_q + step) % ROB_DEPTH;
+                idx = (head_after_pop + step) % ROB_DEPTH;
                 if (survive_vec[idx]) begin
                     tail_after_squash = (idx == ROB_DEPTH-1) ? '0 : (idx + 1'b1);
                 end
@@ -258,6 +262,7 @@ module rob_2w (
                 for (int i = 0; i < ROB_DEPTH; i++) begin
                     valid_bits[i] <= survive_vec[i];
                 end
+                head_q <= head_after_pop;
                 tail_q <= tail_after_squash;
                 count_q <= survive_count;
             end else begin
@@ -274,5 +279,42 @@ module rob_2w (
             end
         end
     end
+
+`ifndef SYNTHESIS
+    integer assert_valid_count;
+
+    always_comb begin
+        assert_valid_count = 0;
+        for (int i = 0; i < ROB_DEPTH; i++) begin
+            if (valid_bits[i] === 1'b1) begin
+                assert_valid_count = assert_valid_count + 1;
+            end
+        end
+    end
+
+    always_ff @(posedge rob_packet_if.clk) begin
+        if ((rob_packet_if.rst_n === 1'b1) && !flush) begin
+            assert ($unsigned(count_q) <= ROB_DEPTH)
+                else $error("[ASSERT:ROB] count exceeds ROB_DEPTH");
+            assert (assert_valid_count == count_q)
+                else $error("[ASSERT:ROB] valid-bit count disagrees with count_q");
+            assert (!head_valid || valid_bits[head_q])
+                else $error("[ASSERT:ROB] non-empty ROB head is invalid");
+            assert (!head1_valid || valid_bits[head_idx1])
+                else $error("[ASSERT:ROB] second ROB head is invalid");
+            assert (!commit_en0 || (head_valid && head_complete))
+                else $error("[ASSERT:ROB] lane0 commit requested for incomplete head");
+            assert (!commit_en1 ||
+                    (commit_en0 && head1_valid && head1_complete))
+                else $error("[ASSERT:ROB] lane1 commit violates in-order retirement");
+            assert (push_fire_count <= free_slots)
+                else $error("[ASSERT:ROB] accepted packet exceeds free slots");
+            assert (!(push_fire0 && push_fire1) ||
+                    (rob_packet_if.data.lane0.data.rob_entry.datapath.rob_tag !=
+                     rob_packet_if.data.lane1.data.rob_entry.datapath.rob_tag))
+                else $error("[ASSERT:ROB] packet lanes reuse one ROB tag");
+        end
+    end
+`endif
 
 endmodule

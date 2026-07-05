@@ -23,14 +23,23 @@ vivado_pid*.zip
 *.runs/
 *.sim/
 *.gen/
+xsim.dir/
 
 # Local/editor files
 .vscode/
 .idea/
+__pycache__/
+*.pyc
 *.swp
 *.swo
 Thumbs.db
 Desktop.ini
+
+# Generated simulation traces
+*_retire.csv
+
+# External random-verification build products
+out/
 
 # Locally built SoftFloat reference-vector generator
 scripts/softfloat/*.exe

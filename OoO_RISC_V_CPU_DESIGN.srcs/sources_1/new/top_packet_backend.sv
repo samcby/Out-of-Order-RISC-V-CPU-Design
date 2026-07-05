@@ -461,8 +461,10 @@ module top_packet_backend #(
                         perf_branch_mem_dual_issue_count_q <= perf_branch_mem_dual_issue_count_q + 1'b1;
                     end
 
-                    if ((issue_if.data.fu_sel == FU_MEM) &&
-                        (issue1_if.data.fu_sel == FU_ALU)) begin
+                    if (((issue_if.data.fu_sel == FU_MEM) &&
+                         (issue1_if.data.fu_sel == FU_ALU)) ||
+                        ((issue_if.data.fu_sel == FU_ALU) &&
+                         (issue1_if.data.fu_sel == FU_MEM))) begin
                         perf_mem_alu_dual_issue_count_q <= perf_mem_alu_dual_issue_count_q + 1'b1;
                     end
 
@@ -524,6 +526,65 @@ module top_packet_backend #(
             end
         end
     end
+
+`ifndef SYNTHESIS
+    logic [63:0] assert_next_retire_order_q;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            assert_next_retire_order_q <= '0;
+        end else begin
+            assert (!(lane0_branch_rename_fire && lane1_branch_rename_fire))
+                else $error("CHECKPOINT: one packet allocated two branch checkpoints");
+            if (branch_rename_fire) begin
+                assert (!active_checkpoint_mask_q[branch_rename_checkpoint_id] ||
+                        checkpoint_kill_mask[branch_rename_checkpoint_id])
+                    else $error("CHECKPOINT: allocated active checkpoint id %0d",
+                                branch_rename_checkpoint_id);
+            end
+
+            for (int i = 0; i < CHECKPOINT_NUM; i++) begin
+                if (active_checkpoint_mask_q[i]) begin
+                    assert (!checkpoint_dep_mask_q[i][i])
+                        else $error("CHECKPOINT: checkpoint %0d depends on itself", i);
+                    assert ((checkpoint_dep_mask_q[i] & ~active_checkpoint_mask_q) == '0)
+                        else $error("CHECKPOINT: checkpoint %0d depends on an inactive checkpoint", i);
+                end else begin
+                    assert (checkpoint_dep_mask_q[i] == '0)
+                        else $error("CHECKPOINT: inactive checkpoint %0d retains dependencies", i);
+                end
+            end
+
+            assert (!commit_en1 || commit_en)
+                else $error("RETIRE: lane1 retired without lane0");
+            assert (!retire_trace1.valid || retire_trace0.valid)
+                else $error("RETIRE: trace lane1 is valid without lane0");
+
+            if (retire_trace0.valid) begin
+                assert (retire_trace0.order == assert_next_retire_order_q)
+                    else $error("RETIRE: expected order %0d, got %0d",
+                                assert_next_retire_order_q, retire_trace0.order);
+                assert (!retire_trace0.rd_wen || retire_trace0.rd_is_fp ||
+                        (retire_trace0.rd != '0))
+                    else $error("RETIRE: integer x0 write reported on lane0");
+            end
+
+            if (retire_trace1.valid) begin
+                assert (retire_trace1.order == (retire_trace0.order + 64'd1))
+                    else $error("RETIRE: lane1 order is not consecutive");
+                assert (retire_trace1.rob_tag != retire_trace0.rob_tag)
+                    else $error("RETIRE: two lanes reported the same ROB tag");
+                assert (!retire_trace1.rd_wen || retire_trace1.rd_is_fp ||
+                        (retire_trace1.rd != '0))
+                    else $error("RETIRE: integer x0 write reported on lane1");
+            end
+
+            assert_next_retire_order_q <= assert_next_retire_order_q +
+                                          64'(retire_trace0.valid ? 1 : 0) +
+                                          64'(retire_trace1.valid ? 1 : 0);
+        end
+    end
+`endif
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin

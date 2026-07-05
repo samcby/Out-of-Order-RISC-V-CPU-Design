@@ -35,8 +35,18 @@ namespace eval ooo_regression {
             tb_top_packet_backend_rv32i_smoke
             tb_top_misaligned_smoke
         }
+        invariants {
+            tb_reg_alias_table_2w
+            tb_free_pool_2w
+            tb_rob_2w
+            tb_lsu_commit_store
+            tb_top_packet_backend_25test
+        }
         performance {
             tb_top_packet_backend_ipc_compare
+        }
+        stress {
+            tb_top_packet_backend_long_stress
         }
         softfloat {
             tb_fp_softfloat_diff
@@ -93,12 +103,15 @@ namespace eval ooo_regression {
             tb_issue_packet_arbiter
             tb_dispatch_packet_stage_dual_issue
             tb_reg_file_2w
+            tb_reg_alias_table_2w
+            tb_free_pool_2w
             tb_rob_2w
             tb_data_cache_smoke
             tb_memory_order_queue
             tb_lsu_commit_store
             tb_top_packet_backend_multi_issue_suite
             tb_top_packet_backend_ipc_compare
+            tb_top_packet_backend_long_stress
             tb_top_packet_backend_lane1_squash_smoke
             tb_top_packet_backend_rv32i_smoke
             tb_top_packet_backend_25test
@@ -193,7 +206,11 @@ proc run_regression {{suite quick}} {
             continue
         }
 
-        if {[catch {run 100000ns} message]} {
+        set run_time 100000ns
+        if {$tb eq "tb_top_packet_backend_long_stress"} {
+            set run_time 1000000ns
+        }
+        if {[catch {run $run_time} message]} {
             puts "ERROR: simulation command failed for $tb"
             puts $message
             incr launch_failures

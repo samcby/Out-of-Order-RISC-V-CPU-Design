@@ -23,30 +23,42 @@ module reg_alias_table_2w (
     output defines_pkg::preg_t lane0_old_des_preg,
     output defines_pkg::preg_t lane1_src_reg_1p,
     output defines_pkg::preg_t lane1_src_reg_2p,
-    output defines_pkg::preg_t lane1_old_des_preg
+    output defines_pkg::preg_t lane1_old_des_preg,
+    output logic [defines_pkg::PREG_NUM-1:0] mapped_bitmap
 );
     import defines_pkg::*;
 
     preg_t rat [0:AREG_NUM-1];
     preg_t checkpoints [0:CHECKPOINT_NUM-1][0:AREG_NUM-1];
 
-    function automatic preg_t lane1_read_after_lane0(input areg_t areg);
-    begin
-        if (w_en[0] && (lane0_des_reg_a != '0) && (areg == lane0_des_reg_a)) begin
-            lane1_read_after_lane0 = lane0_new_des_preg;
-        end else begin
-            lane1_read_after_lane0 = rat[areg];
-        end
-    end
-    endfunction
-
     assign lane0_src_reg_1p   = rat[lane0_src_reg_1a];
     assign lane0_src_reg_2p   = rat[lane0_src_reg_2a];
     assign lane0_old_des_preg = rat[lane0_des_reg_a];
 
-    assign lane1_src_reg_1p   = lane1_read_after_lane0(lane1_src_reg_1a);
-    assign lane1_src_reg_2p   = lane1_read_after_lane0(lane1_src_reg_2a);
-    assign lane1_old_des_preg = lane1_read_after_lane0(lane1_des_reg_a);
+    assign lane1_src_reg_1p =
+        (w_en[0] && (lane0_des_reg_a != '0) &&
+         (lane1_src_reg_1a == lane0_des_reg_a)) ?
+        lane0_new_des_preg : rat[lane1_src_reg_1a];
+    assign lane1_src_reg_2p =
+        (w_en[0] && (lane0_des_reg_a != '0) &&
+         (lane1_src_reg_2a == lane0_des_reg_a)) ?
+        lane0_new_des_preg : rat[lane1_src_reg_2a];
+    assign lane1_old_des_preg =
+        (w_en[0] && (lane0_des_reg_a != '0) &&
+         (lane1_des_reg_a == lane0_des_reg_a)) ?
+        lane0_new_des_preg : rat[lane1_des_reg_a];
+
+    always_comb begin
+        mapped_bitmap = '0;
+        for (int i = 0; i < AREG_NUM; i++) begin
+            if (restore_en) begin
+                mapped_bitmap[checkpoints[restore_checkpoint_id][i]] = 1'b1;
+            end else begin
+                mapped_bitmap[rat[i]] = 1'b1;
+            end
+        end
+        mapped_bitmap[0] = 1'b1;
+    end
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -82,5 +94,27 @@ module reg_alias_table_2w (
             end
         end
     end
+
+`ifndef SYNTHESIS
+    always_ff @(posedge clk) begin
+        if (rst_n === 1'b1) begin
+            assert (rat[0] == '0)
+                else $error("[ASSERT:RAT] architectural x0 mapping changed");
+            assert (mapped_bitmap[0])
+                else $error("[ASSERT:RAT] physical zero is not reserved");
+            assert (!(w_en[0] && (lane0_des_reg_a != '0)) ||
+                    (lane0_new_des_preg != '0))
+                else $error("[ASSERT:RAT] lane0 allocated physical zero");
+            assert (!(w_en[1] && (lane1_des_reg_a != '0)) ||
+                    (lane1_new_des_preg != '0))
+                else $error("[ASSERT:RAT] lane1 allocated physical zero");
+            assert (!(w_en[0] && w_en[1] &&
+                      (lane0_des_reg_a != '0) &&
+                      (lane1_des_reg_a != '0)) ||
+                    (lane0_new_des_preg != lane1_new_des_preg))
+                else $error("[ASSERT:RAT] dual rename reused one physical register");
+        end
+    end
+`endif
 
 endmodule

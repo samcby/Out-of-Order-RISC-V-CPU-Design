@@ -210,44 +210,6 @@ module tb_top_packet_backend_25test;
                      dut.active_checkpoint_mask_q);
         end
 
-        if (rst_n &&
-            ((dut.commit_store_valid0 &&
-              (dut.rob_head.datapath.rob_tag >= rob_tag_t'(8'd95)) &&
-              (dut.rob_head.datapath.rob_tag <= rob_tag_t'(8'd120))) ||
-             (dut.commit_store_valid1 &&
-              (dut.rob_head1.datapath.rob_tag >= rob_tag_t'(8'd95)) &&
-              (dut.rob_head1.datapath.rob_tag <= rob_tag_t'(8'd120))))) begin
-            $display("[COMMIT_TRACE] t=%0t c0=%0b tag0=%0d rd0=x%0d store0=%0b complete0=%0b c1=%0b tag1=%0d rd1=x%0d store1=%0b complete1=%0b",
-                     $time,
-                     dut.commit_store_valid0,
-                     dut.rob_head.datapath.rob_tag,
-                     dut.rob_head.datapath.rd,
-                     dut.rob_head.control_signal.store,
-                     dut.rob_head_complete_i,
-                     dut.commit_store_valid1,
-                     dut.rob_head1.datapath.rob_tag,
-                     dut.rob_head1.datapath.rd,
-                     dut.rob_head1.control_signal.store,
-                     dut.rob_head1_complete_i);
-        end
-
-        if (rst_n &&
-            dut.u_execution.u_lsu.req_valid &&
-            dut.u_execution.u_lsu.req_ready &&
-            dut.u_execution.u_lsu.control_signal.mem_write &&
-            (dut.u_execution.u_lsu.datapath.rob_tag >= rob_tag_t'(8'd95)) &&
-            (dut.u_execution.u_lsu.datapath.rob_tag <= rob_tag_t'(8'd120))) begin
-            $display("[LSU_STORE_ALLOC] t=%0t tag=%0d pc=%08h instr=%08h alloc_commit_match=%0b commit_seen_hit=%0b replay_hit=%0b seen_tag=%0b",
-                     $time,
-                     dut.u_execution.u_lsu.datapath.rob_tag,
-                     dut.u_execution.u_lsu.datapath.pc,
-                     dut.u_execution.u_lsu.datapath.instr,
-                     dut.u_execution.u_lsu.store_alloc_commit_match,
-                     dut.u_execution.u_lsu.commit_seen_hit,
-                     dut.u_execution.u_lsu.commit_replay_hit,
-                     dut.u_execution.u_lsu.commit_seen_valid[dut.u_execution.u_lsu.datapath.rob_tag]);
-        end
-
         if (rst_n && !pass_seen) begin
             preg_t a0_preg_now;
             preg_t a1_preg_now;

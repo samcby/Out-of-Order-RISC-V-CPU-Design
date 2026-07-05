@@ -27,6 +27,7 @@ module tb_reg_alias_table_2w;
     preg_t lane1_src_reg_1p;
     preg_t lane1_src_reg_2p;
     preg_t lane1_old_des_preg;
+    logic [PREG_NUM-1:0] mapped_bitmap;
 
     reg_alias_table_2w dut (
         .clk(clk),
@@ -49,7 +50,8 @@ module tb_reg_alias_table_2w;
         .lane0_old_des_preg(lane0_old_des_preg),
         .lane1_src_reg_1p(lane1_src_reg_1p),
         .lane1_src_reg_2p(lane1_src_reg_2p),
-        .lane1_old_des_preg(lane1_old_des_preg)
+        .lane1_old_des_preg(lane1_old_des_preg),
+        .mapped_bitmap(mapped_bitmap)
     );
 
     initial clk = 1'b0;

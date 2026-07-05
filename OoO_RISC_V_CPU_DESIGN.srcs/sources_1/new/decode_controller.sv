@@ -73,7 +73,8 @@ module decode_controller (
             CSR_MEPC,
             CSR_MCAUSE,
             CSR_MTVAL,
-            CSR_MIP: csr_addr_implemented = 1'b1;
+            CSR_MIP,
+            CSR_MHARTID: csr_addr_implemented = 1'b1;
             default: csr_addr_implemented = 1'b0;
         endcase
     end

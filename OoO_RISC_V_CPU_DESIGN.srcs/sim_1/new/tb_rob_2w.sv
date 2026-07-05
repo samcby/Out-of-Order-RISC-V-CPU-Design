@@ -208,6 +208,46 @@ module tb_rob_2w;
         flush = 1'b0;
         check_ok(empty, "flush clears ROB");
 
+        // A branch recovery may coincide with retirement of older entries.
+        // The squash path must preserve those pops instead of exposing the
+        // same committed tags again on the following cycle.
+        rob_packet_if.valid = 1'b1;
+        set_rob_lane(rob_packet_if.data.lane0, 1'b1,
+                     rob_tag_t'(60), areg_t'(6), preg_t'(45), '0);
+        set_rob_lane(rob_packet_if.data.lane1, 1'b1,
+                     rob_tag_t'(61), areg_t'(7), preg_t'(46), '0);
+        step_clk;
+
+        set_rob_lane(rob_packet_if.data.lane0, 1'b1,
+                     rob_tag_t'(62), areg_t'(8), preg_t'(47),
+                     cp_mask_t'(4'b0010));
+        rob_packet_if.data.lane1 = '0;
+        step_clk;
+        rob_packet_if.valid = 1'b0;
+
+        complete_en0 = 1'b1;
+        complete_tag0 = rob_tag_t'(60);
+        complete_result0 = 32'h6060_0000;
+        complete_en1 = 1'b1;
+        complete_tag1 = rob_tag_t'(61);
+        complete_result1 = 32'h6161_0000;
+        step_clk;
+        complete_en0 = 1'b0;
+        complete_en1 = 1'b0;
+        check_ok(head_complete && head1_complete,
+                 "older entries complete before simultaneous recovery");
+
+        commit_en = 1'b1;
+        commit_en1 = 1'b1;
+        squash_en = 1'b1;
+        squash_checkpoint_id = cp_id_t'(1);
+        step_clk;
+        commit_en = 1'b0;
+        commit_en1 = 1'b0;
+        squash_en = 1'b0;
+        check_ok(empty,
+                 "simultaneous dual commit and squash removes each entry once");
+
         // Fill all but one slot, then verify that a dual packet receives
         // stable backpressure without feeding valid back into ready.
         for (int i = 0; i < 7; i++) begin

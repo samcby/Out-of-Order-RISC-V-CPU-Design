@@ -26,13 +26,17 @@ Available groups:
 | `quick` | Mainline architecture confidence after ordinary RTL changes |
 | `multi_issue` | Frontend, rename, issue, execution, writeback, and commit |
 | `memory` | Cache, memory ordering, forwarding, and precise stores |
+| `invariants` | RAT, free pool, ROB, store buffer, and retirement consistency assertions |
 | `performance` | Controlled 1-wide versus 2-wide IPC comparison |
+| `stress` | Deterministic long-program retirement and architectural-state checking |
 | `softfloat` | Deterministic Berkeley SoftFloat differential vectors |
 | `floating` | RV32F infrastructure, memory transport, and exact FP execution |
 | `full` | Milestone regression before a push or architecture transition |
 
 Every testbench prints its own `PASS` or `FAIL` banner. The Tcl script reports
 launch/runtime errors, while assertion results remain visible in the console.
+The requirement-level evidence and remaining gaps are tracked in
+[`VERIFICATION_COVERAGE.md`](VERIFICATION_COVERAGE.md).
 
 ## Floating-Point Infrastructure
 
@@ -175,6 +179,20 @@ tb_top_packet_backend_rv32i_smoke
 tb_top_misaligned_smoke
 ```
 
+### Invariants
+
+```text
+tb_reg_alias_table_2w
+tb_free_pool_2w
+tb_rob_2w
+tb_lsu_commit_store
+tb_top_packet_backend_25test
+```
+
+This focused suite exercises the modules that contain simulation-only
+consistency assertions and finishes with an integrated checkpoint, squash,
+store, and retirement workload.
+
 ### Performance
 
 ```text
@@ -193,6 +211,24 @@ independent_alu:  1.368 IPC vs 0.812 IPC, 1.684x speedup
 dependency_chain: 0.481 IPC vs 0.473 IPC, 1.019x speedup
 memory_plus_alu:  0.286 IPC vs 0.243 IPC, 1.175x speedup
 ```
+
+### Stress
+
+```text
+tb_top_packet_backend_long_stress
+```
+
+The generator `scripts/generate_rv32i_long_stress.py` emits a deterministic
+RV32I program, final architectural-register oracle, and per-PC retirement
+oracle under `tests/stress/generated`. The testbench checks every retired
+PC/instruction against a strict ordered stream, checks register writes,
+detects retirement deadlock, compares all integer registers, and writes a
+local retirement CSV for diagnosis.
+
+The checked-in default seed currently executes 10,282 dynamic instructions
+from a 10,439-instruction image. It completes in 15,555 active cycles at
+0.661 IPC, including 3,968 dual-retire cycles. Three additional 10K-class
+seeds have also passed the same retirement and final-state checks.
 
 ### Full
 
@@ -215,6 +251,7 @@ tb_top_packet_backend_rv32i_smoke
 tb_top_packet_backend_25test
 tb_top_packet_backend_trap_smoke
 tb_top_packet_backend_interrupt_smoke
+tb_top_packet_backend_long_stress
 ```
 
 ## Retired Integration Tests

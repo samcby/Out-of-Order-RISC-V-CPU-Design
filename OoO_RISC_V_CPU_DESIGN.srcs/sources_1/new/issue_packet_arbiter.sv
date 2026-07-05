@@ -76,8 +76,11 @@ module issue_packet_arbiter #(
                 sel1_lsu = 1'b1;
             end
         end else if (alu_if.valid && lsu_if.valid) begin
-            sel0_lsu = 1'b1;
-            sel1_alu = 1'b1;
+            // Keep the independently executable ALU operation in slot 0.
+            // A blocked LSU request may wait in slot 1 without preventing an
+            // otherwise-ready ALU instruction from making progress.
+            sel0_alu = 1'b1;
+            sel1_lsu = 1'b1;
         end else if (alu_if.valid && alu1_if.valid && !alu1_is_csr) begin
             sel0_alu = 1'b1;
             sel1_alu1 = 1'b1;

@@ -61,6 +61,7 @@ module rename_packet_stage (
     logic checkpoint_save;
     cp_id_t checkpoint_id_save;
     cp_mask_t lane1_visible_mask;
+    logic [PREG_NUM-1:0] int_mapped_bitmap;
     logic fp_rename_ready;
     fp_defines_pkg::fp_preg_t lane0_fp_src0_preg;
     fp_defines_pkg::fp_preg_t lane0_fp_src1_preg;
@@ -332,7 +333,8 @@ module rename_packet_stage (
         .lane0_old_des_preg(lane0_old_des_preg_raw),
         .lane1_src_reg_1p(lane1_src_reg_1p_raw),
         .lane1_src_reg_2p(lane1_src_reg_2p_raw),
-        .lane1_old_des_preg(lane1_old_des_preg_raw)
+        .lane1_old_des_preg(lane1_old_des_preg_raw),
+        .mapped_bitmap(int_mapped_bitmap)
     );
 
     free_pool_2w u_free_pool_2w (
@@ -346,6 +348,7 @@ module rename_packet_stage (
         .pop_commit(rename_fire),
         .push_data0(retire_preg0),
         .push_data1(retire_preg1),
+        .mapped_bitmap(int_mapped_bitmap),
         .pop_data0(lane0_alloc_preg),
         .pop_data1(lane1_alloc_preg),
         .pop_valid0(lane0_alloc_valid),

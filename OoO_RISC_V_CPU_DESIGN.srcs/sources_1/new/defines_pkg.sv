@@ -50,6 +50,7 @@ package defines_pkg;
     parameter logic [11:0] CSR_MCAUSE  = 12'h342;
     parameter logic [11:0] CSR_MTVAL   = 12'h343;
     parameter logic [11:0] CSR_MIP     = 12'h344;
+    parameter logic [11:0] CSR_MHARTID = 12'hf14;
 
     parameter logic [2:0] SYS_ECALL   = 3'd1;
     parameter logic [2:0] SYS_EBREAK  = 3'd2;

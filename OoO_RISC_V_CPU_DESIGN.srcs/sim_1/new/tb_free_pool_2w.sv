@@ -13,6 +13,7 @@ module tb_free_pool_2w;
     preg_t push_data1;
     preg_t pop_data0;
     preg_t pop_data1;
+    logic [PREG_NUM-1:0] mapped_bitmap;
     logic pop_valid0;
     logic pop_valid1;
     logic checkpoint_save;
@@ -21,6 +22,8 @@ module tb_free_pool_2w;
     cp_id_t restore_checkpoint_id;
     logic full;
     logic empty;
+    logic has_free_1;
+    logic has_free_2;
 
     free_pool_2w dut (
         .clk(clk),
@@ -30,6 +33,7 @@ module tb_free_pool_2w;
         .pop_commit(pop_commit),
         .push_data0(push_data0),
         .push_data1(push_data1),
+        .mapped_bitmap(mapped_bitmap),
         .pop_data0(pop_data0),
         .pop_data1(pop_data1),
         .pop_valid0(pop_valid0),
@@ -39,7 +43,9 @@ module tb_free_pool_2w;
         .restore_en(restore_en),
         .restore_checkpoint_id(restore_checkpoint_id),
         .full(full),
-        .empty(empty)
+        .empty(empty),
+        .has_free_1(has_free_1),
+        .has_free_2(has_free_2)
     );
 
     initial clk = 1'b0;
@@ -70,6 +76,7 @@ module tb_free_pool_2w;
         pop_commit = 1'b0;
         push_data0 = '0;
         push_data1 = '0;
+        mapped_bitmap = '0;
         checkpoint_save = 1'b0;
         checkpoint_id_save = '0;
         restore_en = 1'b0;

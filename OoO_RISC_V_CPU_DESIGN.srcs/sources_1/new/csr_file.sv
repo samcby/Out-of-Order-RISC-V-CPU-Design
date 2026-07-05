@@ -66,6 +66,7 @@ module csr_file (
             CSR_MCAUSE:  csr_rdata = mcause_q;
             CSR_MTVAL:   csr_rdata = mtval_q;
             CSR_MIP:     csr_rdata = mip_q;
+            CSR_MHARTID: csr_rdata = '0;
             default:     csr_rdata = '0;
         endcase
     end

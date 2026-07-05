@@ -316,13 +316,14 @@ module lsu #(
                        (!pending_valid && !resp_valid && store_alloc_valid) :
                        (!pending_valid && !resp_valid);
     assign mem_req_valid =
-        (pending_valid && !pending_store_blocking &&
+        !mem_resp_valid &&
+        ((pending_valid && !pending_store_blocking &&
          !pending_forward_valid &&
          !store_drain_wait_q &&
          !pending_squashed && !pending_mem_req_sent) ||
         (store_drain_valid &&
          !store_buf_squashed[store_drain_idx] &&
-         !store_buf_mem_req_sent[store_drain_idx]);
+         !store_buf_mem_req_sent[store_drain_idx]));
     assign curr_word = pending_forward_valid ? pending_forward_word : mem_resp_rdata;
 
     data_cache #(
@@ -591,5 +592,32 @@ module lsu #(
             end
         end
     end
+
+`ifndef SYNTHESIS
+    always_ff @(posedge clk) begin
+        if (rst_n === 1'b1) begin
+            assert (!resp_reg_write || resp_valid)
+                else $error("[ASSERT:LSU] register write lacks valid response");
+            assert (!store_drain_valid ||
+                    (store_buf_valid[store_drain_idx] &&
+                     store_buf_committed[store_drain_idx] &&
+                     !store_buf_squashed[store_drain_idx]))
+                else $error("[ASSERT:LSU] draining uncommitted or squashed store");
+            assert (!(mem_req_valid && store_drain_valid) ||
+                    store_buf_committed[store_drain_idx])
+                else $error("[ASSERT:LSU] memory write issued before store commit");
+
+            for (int i = 0; i < STORE_BUF_DEPTH; i++) begin
+                assert (!store_buf_committed[i] || store_buf_valid[i])
+                    else $error("[ASSERT:LSU] committed bit set on invalid store");
+                assert (!store_buf_mem_req_sent[i] ||
+                        (store_buf_valid[i] && store_buf_committed[i]))
+                    else $error("[ASSERT:LSU] uncommitted store reached memory");
+                assert (!store_buf_squashed[i] || !store_buf_committed[i])
+                    else $error("[ASSERT:LSU] committed store selected for squash");
+            end
+        end
+    end
+`endif
 
 endmodule
