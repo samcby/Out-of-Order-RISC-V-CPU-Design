@@ -3,12 +3,16 @@ module dispatch_packet_logic (
 
     input logic lane0_src1_ready,
     input logic lane0_src2_ready,
+    input logic lane0_src3_ready,
     input logic [defines_pkg::WIDTH-1:0] lane0_src1_value,
     input logic [defines_pkg::WIDTH-1:0] lane0_src2_value,
+    input logic [defines_pkg::WIDTH-1:0] lane0_src3_value,
     input logic lane1_src1_ready,
     input logic lane1_src2_ready,
+    input logic lane1_src3_ready,
     input logic [defines_pkg::WIDTH-1:0] lane1_src1_value,
     input logic [defines_pkg::WIDTH-1:0] lane1_src2_value,
+    input logic [defines_pkg::WIDTH-1:0] lane1_src3_value,
     input logic csr_pending,
 
     pip_if.producer rob_packet_if,
@@ -71,11 +75,20 @@ module dispatch_packet_logic (
                         in_if.data.lane1.data.rs_entry.control_signal.alu_control_signal.sys_en);
 
     assign alu_pair_raw_dep = lane0_alu && lane1_alu &&
-                              (in_if.data.lane0.data.rs_entry.datapath.new_des_preg != '0) &&
-                              ((in_if.data.lane1.data.rs_entry.datapath.src_reg_1p ==
-                                in_if.data.lane0.data.rs_entry.datapath.new_des_preg) ||
-                               (in_if.data.lane1.data.rs_entry.datapath.src_reg_2p ==
-                                in_if.data.lane0.data.rs_entry.datapath.new_des_preg));
+                              (in_if.data.lane0.data.rs_entry.datapath.dest_is_fp ||
+                               (in_if.data.lane0.data.rs_entry.datapath.new_des_preg != '0)) &&
+                              (((in_if.data.lane1.data.rs_entry.datapath.src1_is_fp ==
+                                 in_if.data.lane0.data.rs_entry.datapath.dest_is_fp) &&
+                                (in_if.data.lane1.data.rs_entry.datapath.src_reg_1p ==
+                                 in_if.data.lane0.data.rs_entry.datapath.new_des_preg)) ||
+                               ((in_if.data.lane1.data.rs_entry.datapath.src2_is_fp ==
+                                 in_if.data.lane0.data.rs_entry.datapath.dest_is_fp) &&
+                                (in_if.data.lane1.data.rs_entry.datapath.src_reg_2p ==
+                                 in_if.data.lane0.data.rs_entry.datapath.new_des_preg)) ||
+                               ((in_if.data.lane1.data.rs_entry.datapath.src3_is_fp ==
+                                 in_if.data.lane0.data.rs_entry.datapath.dest_is_fp) &&
+                                (in_if.data.lane1.data.rs_entry.datapath.src_reg_3p ==
+                                 in_if.data.lane0.data.rs_entry.datapath.new_des_preg)));
 
     assign alu_pair_speculative = lane0_alu && lane1_alu &&
                                   ((in_if.data.lane0.data.rs_entry.datapath.speculation_mask != '0) ||
@@ -99,13 +112,19 @@ module dispatch_packet_logic (
 
         lane0_instr.rs_entry.src1_ready = lane0_src1_ready;
         lane0_instr.rs_entry.src2_ready = lane0_src2_ready;
+        lane0_instr.rs_entry.src3_ready =
+            !lane0_instr.rs_entry.datapath.src3_is_fp || lane0_src3_ready;
         lane0_instr.rs_entry.datapath.src1_value = lane0_src1_value;
         lane0_instr.rs_entry.datapath.src2_value = lane0_src2_value;
+        lane0_instr.rs_entry.datapath.src3_value = lane0_src3_value;
 
         lane1_instr.rs_entry.src1_ready = lane1_src1_ready;
         lane1_instr.rs_entry.src2_ready = lane1_src2_ready;
+        lane1_instr.rs_entry.src3_ready =
+            !lane1_instr.rs_entry.datapath.src3_is_fp || lane1_src3_ready;
         lane1_instr.rs_entry.datapath.src1_value = lane1_src1_value;
         lane1_instr.rs_entry.datapath.src2_value = lane1_src2_value;
+        lane1_instr.rs_entry.datapath.src3_value = lane1_src3_value;
     end
 
     assign lane0_rs_ready = lane0_nop ||
@@ -143,12 +162,15 @@ module dispatch_packet_logic (
         lane0_alu ? lane0_instr.rs_entry.src1_ready : lane1_instr.rs_entry.src1_ready;
     assign alu_if.data.src2_ready =
         lane0_alu ? lane0_instr.rs_entry.src2_ready : lane1_instr.rs_entry.src2_ready;
+    assign alu_if.data.src3_ready =
+        lane0_alu ? lane0_instr.rs_entry.src3_ready : lane1_instr.rs_entry.src3_ready;
 
     assign alu1_if.valid = in_if.valid && dispatch_ready && lane0_alu && lane1_alu;
     assign alu1_if.data.control_signal = lane1_instr.rs_entry.control_signal.alu_control_signal;
     assign alu1_if.data.datapath = lane1_instr.rs_entry.datapath;
     assign alu1_if.data.src1_ready = lane1_instr.rs_entry.src1_ready;
     assign alu1_if.data.src2_ready = lane1_instr.rs_entry.src2_ready;
+    assign alu1_if.data.src3_ready = lane1_instr.rs_entry.src3_ready;
 
     assign lsu_if.valid = in_if.valid && dispatch_ready && (lane0_lsu || lane1_lsu);
     assign lsu_if.data.control_signal =
@@ -160,6 +182,7 @@ module dispatch_packet_logic (
         lane0_lsu ? lane0_instr.rs_entry.src1_ready : lane1_instr.rs_entry.src1_ready;
     assign lsu_if.data.src2_ready =
         lane0_lsu ? lane0_instr.rs_entry.src2_ready : lane1_instr.rs_entry.src2_ready;
+    assign lsu_if.data.src3_ready = 1'b1;
 
     assign branch_if.valid = in_if.valid && dispatch_ready && (lane0_branch || lane1_branch);
     assign branch_if.data.control_signal =
@@ -171,5 +194,6 @@ module dispatch_packet_logic (
         lane0_branch ? lane0_instr.rs_entry.src1_ready : lane1_instr.rs_entry.src1_ready;
     assign branch_if.data.src2_ready =
         lane0_branch ? lane0_instr.rs_entry.src2_ready : lane1_instr.rs_entry.src2_ready;
+    assign branch_if.data.src3_ready = 1'b1;
 
 endmodule

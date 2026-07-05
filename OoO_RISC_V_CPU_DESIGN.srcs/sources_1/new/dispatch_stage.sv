@@ -79,9 +79,11 @@ module dispatch_stage (
         .OPERATION(FU_ALU)
     ) u_rs_alu (
         .wb_valid (wb_valid),
+        .wb_is_fp (1'b0),
         .wb_preg  (wb_preg),
         .wb_result(wb_result),
         .wb1_valid(1'b0),
+        .wb1_is_fp(1'b0),
         .wb1_preg ('0),
         .wb1_result('0),
         .fu_sel   (fu_sel),
@@ -100,9 +102,11 @@ module dispatch_stage (
         .SINGLE_ENTRY(1'b1)
     ) u_rs_lsu (
         .wb_valid (wb_valid),
+        .wb_is_fp (1'b0),
         .wb_preg  (wb_preg),
         .wb_result(wb_result),
         .wb1_valid(1'b0),
+        .wb1_is_fp(1'b0),
         .wb1_preg ('0),
         .wb1_result('0),
         .fu_sel   (fu_sel),
@@ -120,9 +124,11 @@ module dispatch_stage (
         .OPERATION(FU_BRANCH)
     ) u_rs_branch (
         .wb_valid (wb_valid),
+        .wb_is_fp (1'b0),
         .wb_preg  (wb_preg),
         .wb_result(wb_result),
         .wb1_valid(1'b0),
+        .wb1_is_fp(1'b0),
         .wb1_preg ('0),
         .wb1_result('0),
         .fu_sel   (fu_sel),

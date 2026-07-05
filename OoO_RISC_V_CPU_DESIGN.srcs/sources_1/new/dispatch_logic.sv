@@ -40,6 +40,7 @@ module dispatch_logic (
         instr = in_if.data;
         instr.rs_entry.src1_ready = src1_ready;
         instr.rs_entry.src2_ready = src2_ready;
+        instr.rs_entry.src3_ready = 1'b1;
         instr.rs_entry.datapath.src1_value = src1_value;
         instr.rs_entry.datapath.src2_value = src2_value;
     end
@@ -62,17 +63,20 @@ module dispatch_logic (
     assign alu_if.data.datapath       = instr.rs_entry.datapath;
     assign alu_if.data.src1_ready     = instr.rs_entry.src1_ready;
     assign alu_if.data.src2_ready     = instr.rs_entry.src2_ready;
+    assign alu_if.data.src3_ready     = 1'b1;
 
     assign lsu_if.valid = in_if.valid && dispatch_ready && sel_lsu;
     assign lsu_if.data.control_signal = instr.rs_entry.control_signal.lsu_control_signal;
     assign lsu_if.data.datapath       = instr.rs_entry.datapath;
     assign lsu_if.data.src1_ready     = instr.rs_entry.src1_ready;
     assign lsu_if.data.src2_ready     = instr.rs_entry.src2_ready;
+    assign lsu_if.data.src3_ready     = 1'b1;
 
     assign branch_if.valid = in_if.valid && dispatch_ready && sel_branch;
     assign branch_if.data.control_signal = instr.rs_entry.control_signal.branch_control_signal;
     assign branch_if.data.datapath       = instr.rs_entry.datapath;
     assign branch_if.data.src1_ready     = instr.rs_entry.src1_ready;
     assign branch_if.data.src2_ready     = instr.rs_entry.src2_ready;
+    assign branch_if.data.src3_ready     = 1'b1;
 
 endmodule

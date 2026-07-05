@@ -1,4 +1,6 @@
-module execution_stage (
+module execution_stage #(
+    parameter int MEM_WORDS = 256
+)(
     pip_if.consumer in_if,
     pip_if.consumer in1_if,
 
@@ -8,24 +10,35 @@ module execution_stage (
     input  logic                           interrupt_take,
     input  logic [defines_pkg::WIDTH-1:0]  interrupt_mepc,
     input  logic [defines_pkg::WIDTH-1:0]  interrupt_mcause,
+    input  logic [2:0]                     fp_frm_value,
+    input  logic [defines_pkg::WIDTH-1:0]  fp_csr_rdata,
+    input  logic                           fp_state_dirty,
+    input  logic                           commit_store_valid0,
+    input  defines_pkg::rob_tag_t          commit_store_tag0,
+    input  logic                           commit_store_valid1,
+    input  defines_pkg::rob_tag_t          commit_store_tag1,
 
     output logic                           wb_valid,
+    output logic                           wb_is_fp,
     output defines_pkg::preg_t             wb_preg,
     output defines_pkg::rob_tag_t          wb_tag,
     output logic [defines_pkg::WIDTH-1:0]  wb_result,
     output logic                           wb1_valid,
+    output logic                           wb1_is_fp,
     output defines_pkg::preg_t             wb1_preg,
     output defines_pkg::rob_tag_t          wb1_tag,
     output logic [defines_pkg::WIDTH-1:0]  wb1_result,
     output logic                           complete_valid,
     output defines_pkg::rob_tag_t          complete_tag,
     output logic [defines_pkg::WIDTH-1:0]  complete_result,
+    output logic [4:0]                     complete_fp_flags,
     output logic                           branch_complete_valid,
     output defines_pkg::rob_tag_t          branch_complete_tag,
     output logic [defines_pkg::WIDTH-1:0]  branch_complete_result,
     output logic                           lane1_complete_valid,
     output defines_pkg::rob_tag_t          lane1_complete_tag,
     output logic [defines_pkg::WIDTH-1:0]  lane1_complete_result,
+    output logic [4:0]                     lane1_complete_fp_flags,
 
     output logic                           branch_resolve,
     output logic [defines_pkg::CHECKPOINT_W-1:0] resolve_checkpoint_id,
@@ -39,7 +52,10 @@ module execution_stage (
     output logic [defines_pkg::WIDTH-1:0]  pc_branch,
     output logic                           recover_rat,
     output logic [defines_pkg::WIDTH-1:0]  csr_mstatus_value,
-    output logic [defines_pkg::WIDTH-1:0]  csr_mie_value
+    output logic [defines_pkg::WIDTH-1:0]  csr_mie_value,
+    output logic                           fp_csr_write_en,
+    output logic [11:0]                    fp_csr_write_addr,
+    output logic [defines_pkg::WIDTH-1:0]  fp_csr_write_data
     
 );
     import defines_pkg::*;
@@ -48,6 +64,8 @@ module execution_stage (
 
     logic [WIDTH-1:0] alu_result;
     logic [WIDTH-1:0] alu1_result;
+    logic [4:0]       alu_fp_flags;
+    logic [4:0]       alu1_fp_flags;
     lsu_control_t     lsu_control_safe;
     logic             lsu_req_valid;
     logic             lsu_req_ready;
@@ -55,12 +73,16 @@ module execution_stage (
     rob_tag_t         lsu_resp_tag;
     preg_t            lsu_resp_preg;
     logic             lsu_resp_reg_write;
+    logic             lsu_resp_dest_is_fp;
     logic [WIDTH-1:0] lsu_resp_result;
     logic [WIDTH-1:0] csr_result;
+    logic [WIDTH-1:0] selected_csr_result;
     logic [WIDTH-1:0] csr_mtvec_value;
     logic [WIDTH-1:0] csr_mepc_value;
     logic [WIDTH-1:0] csr_operand;
     logic             csr_write_en;
+    logic             machine_csr_write_en;
+    logic             fp_csr_selected;
     logic             sys_issue_now;
     logic             trap_write_en;
     logic             sync_exception_write_en;
@@ -120,8 +142,48 @@ module execution_stage (
     logic [CHECKPOINT_W-1:0] resolve_cp_id_now;
     logic branch_squash_now;
     logic branch_issue_now;
+    logic issue0_fp_candidate;
+    logic issue1_fp_candidate;
+    logic issue0_fp_long_candidate;
+    logic issue1_fp_long_candidate;
     logic issue1_alu_candidate;
     logic issue1_alu_fire;
+    logic issue1_mem_candidate;
+    logic issue1_mem_fire;
+    logic issue0_mem_candidate;
+    logic issue0_mem_fire;
+    lsu_control_t selected_mem_control;
+    rs_datapath_t selected_mem_datapath;
+    logic fp0_in_ready;
+    logic fp0_out_valid;
+    logic fp0_out_ready;
+    rob_tag_t fp0_out_tag;
+    preg_t fp0_out_preg;
+    logic fp0_out_dest_is_fp;
+    logic fp0_out_reg_write;
+    logic [WIDTH-1:0] fp0_out_result;
+    logic [4:0] fp0_out_flags;
+    logic fp1_in_ready;
+    logic fp1_out_valid;
+    rob_tag_t fp1_out_tag;
+    preg_t fp1_out_preg;
+    logic fp1_out_dest_is_fp;
+    logic fp1_out_reg_write;
+    logic [WIDTH-1:0] fp1_out_result;
+    logic [4:0] fp1_out_flags;
+    logic fp_long_in_ready;
+    logic fp_long_out_valid;
+    logic fp_long_out_ready;
+    logic fp_long_busy;
+    logic fp_long_select_lane1;
+    alu_control_t fp_long_control;
+    rs_datapath_t fp_long_datapath;
+    rob_tag_t fp_long_out_tag;
+    preg_t fp_long_out_preg;
+    logic fp_long_out_dest_is_fp;
+    logic fp_long_out_reg_write;
+    logic [WIDTH-1:0] fp_long_out_result;
+    logic [4:0] fp_long_out_flags;
 
     assign resolve_now = br_pipe_valid[BR_RESOLVE_LAT-1];
     assign resolve_pc_src_now = br_pipe_pc_src[BR_RESOLVE_LAT-1];
@@ -137,30 +199,96 @@ module execution_stage (
                                         branch_actual_taken_now &&
                                         (branch_target[1:0] != 2'b00);
     assign branch_issue_now = branch_fu_fire && !branch_addr_misaligned_now;
+    assign issue0_fp_candidate =
+        in_if.valid &&
+        (in_if.data.fu_sel == FU_ALU) &&
+        in_if.data.control_signal.alu.fp_en &&
+        ((in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_ADD) ||
+         (in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_SUB) ||
+         (in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_MUL) ||
+         (in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_CVT_W_S) ||
+         (in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_CVT_WU_S) ||
+         (in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_CVT_S_W) ||
+         (in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_CVT_S_WU) ||
+         (in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_MADD) ||
+         (in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_MSUB) ||
+         (in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_NMSUB) ||
+         (in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_NMADD));
+    assign issue1_fp_candidate =
+        in1_if.valid &&
+        (in1_if.data.fu_sel == FU_ALU) &&
+        in1_if.data.control_signal.alu.fp_en &&
+        ((in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_ADD) ||
+         (in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_SUB) ||
+         (in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_MUL) ||
+         (in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_CVT_W_S) ||
+         (in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_CVT_WU_S) ||
+         (in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_CVT_S_W) ||
+         (in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_CVT_S_WU) ||
+         (in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_MADD) ||
+         (in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_MSUB) ||
+         (in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_NMSUB) ||
+         (in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_NMADD));
+    assign issue0_fp_long_candidate =
+        in_if.valid &&
+        (in_if.data.fu_sel == FU_ALU) &&
+        in_if.data.control_signal.alu.fp_en &&
+        ((in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_DIV) ||
+         (in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_SQRT));
+    assign issue1_fp_long_candidate =
+        in1_if.valid &&
+        (in1_if.data.fu_sel == FU_ALU) &&
+        in1_if.data.control_signal.alu.fp_en &&
+        ((in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_DIV) ||
+         (in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_SQRT));
     assign issue1_alu_candidate =
         in1_if.valid &&
         (in1_if.data.fu_sel == FU_ALU) &&
         !in1_if.data.control_signal.alu.csr_en &&
-        !in1_if.data.control_signal.alu.sys_en;
+        !in1_if.data.control_signal.alu.sys_en &&
+        !issue1_fp_candidate &&
+        !issue1_fp_long_candidate;
+    assign issue1_mem_candidate =
+        in1_if.valid &&
+        (in1_if.data.fu_sel == FU_MEM);
+    assign issue0_mem_candidate =
+        in_if.valid &&
+        (in_if.data.fu_sel == FU_MEM);
+    assign selected_mem_control =
+        issue1_mem_candidate ? in1_if.data.control_signal.lsu :
+                               in_if.data.control_signal.lsu;
+    assign selected_mem_datapath =
+        issue1_mem_candidate ? in1_if.data.datapath :
+                               in_if.data.datapath;
     assign in1_if.ready =
         !in1_if.valid ||
-        (issue1_alu_candidate &&
-         !interrupt_take);
+        (!interrupt_take &&
+         (issue1_fp_long_candidate ?
+              (!issue0_fp_long_candidate && fp_long_in_ready) :
+          issue1_fp_candidate ?
+              fp1_in_ready :
+              (!fp1_out_valid &&
+               (issue1_alu_candidate ||
+                (issue1_mem_candidate &&
+                 !lsu_resp_valid &&
+                 (mem_addr_misaligned_candidate || lsu_req_ready))))));
     assign issue1_alu_fire = in1_if.valid && in1_if.ready && issue1_alu_candidate;
-    assign mem_issue_candidate = in_if.valid && (in_if.data.fu_sel == FU_MEM);
-    assign mem_fu_fire = in_if.valid && in_if.ready && (in_if.data.fu_sel == FU_MEM);
-    assign mem_eff_addr = in_if.data.datapath.src1_value + in_if.data.datapath.imm;
+    assign issue1_mem_fire = in1_if.valid && in1_if.ready && issue1_mem_candidate;
+    assign issue0_mem_fire = in_if.valid && in_if.ready && issue0_mem_candidate;
+    assign mem_issue_candidate = issue0_mem_candidate || issue1_mem_candidate;
+    assign mem_fu_fire = issue0_mem_fire || issue1_mem_fire;
+    assign mem_eff_addr = selected_mem_datapath.src1_value + selected_mem_datapath.imm;
     assign mem_load_misaligned_candidate =
         mem_issue_candidate &&
-        in_if.data.control_signal.lsu.mem_read &&
-        ((((in_if.data.control_signal.lsu.funct3 == 3'b001) ||
-           (in_if.data.control_signal.lsu.funct3 == 3'b101)) && mem_eff_addr[0]) ||
-         ((in_if.data.control_signal.lsu.funct3 == 3'b010) && (mem_eff_addr[1:0] != 2'b00)));
+        selected_mem_control.mem_read &&
+        ((((selected_mem_control.funct3 == 3'b001) ||
+           (selected_mem_control.funct3 == 3'b101)) && mem_eff_addr[0]) ||
+         ((selected_mem_control.funct3 == 3'b010) && (mem_eff_addr[1:0] != 2'b00)));
     assign mem_store_misaligned_candidate =
         mem_issue_candidate &&
-        in_if.data.control_signal.lsu.mem_write &&
-        (((in_if.data.control_signal.lsu.funct3 == 3'b001) && mem_eff_addr[0]) ||
-         ((in_if.data.control_signal.lsu.funct3 == 3'b010) && (mem_eff_addr[1:0] != 2'b00)));
+        selected_mem_control.mem_write &&
+        (((selected_mem_control.funct3 == 3'b001) && mem_eff_addr[0]) ||
+         ((selected_mem_control.funct3 == 3'b010) && (mem_eff_addr[1:0] != 2'b00)));
     assign mem_addr_misaligned_candidate =
         mem_load_misaligned_candidate || mem_store_misaligned_candidate;
     assign mem_load_misaligned_now =
@@ -170,10 +298,10 @@ module execution_stage (
     assign mem_addr_misaligned_now = mem_load_misaligned_now || mem_store_misaligned_now;
     assign lsu_req_valid = mem_fu_fire &&
                            !mem_addr_misaligned_now &&
-                           (in_if.data.control_signal.lsu.mem_read ||
-                            in_if.data.control_signal.lsu.mem_write);
+                           (selected_mem_control.mem_read ||
+                            selected_mem_control.mem_write);
     always_comb begin
-        lsu_control_safe = in_if.data.control_signal.lsu;
+        lsu_control_safe = selected_mem_control;
         if (mem_addr_misaligned_now) begin
             lsu_control_safe.mem_read  = 1'b0;
             lsu_control_safe.mem_write = 1'b0;
@@ -188,6 +316,15 @@ module execution_stage (
                           in_if.data.control_signal.alu.csr_en &&
                           ((in_if.data.control_signal.alu.csr_op == CSR_RW) ||
                            (csr_operand != '0));
+    assign fp_csr_selected =
+        (in_if.data.control_signal.alu.csr_addr == fp_defines_pkg::CSR_FFLAGS) ||
+        (in_if.data.control_signal.alu.csr_addr == fp_defines_pkg::CSR_FRM) ||
+        (in_if.data.control_signal.alu.csr_addr == fp_defines_pkg::CSR_FCSR);
+    assign machine_csr_write_en = csr_write_en && !fp_csr_selected;
+    assign fp_csr_write_en = csr_write_en && fp_csr_selected;
+    assign fp_csr_write_addr = in_if.data.control_signal.alu.csr_addr;
+    assign fp_csr_write_data = csr_operand;
+    assign selected_csr_result = fp_csr_selected ? fp_csr_rdata : csr_result;
     assign sys_issue_now = in_if.valid && in_if.ready &&
                            (in_if.data.fu_sel == FU_ALU) &&
                            in_if.data.control_signal.alu.sys_en;
@@ -217,7 +354,9 @@ module execution_stage (
     assign csr_mret_en       = !interrupt_take &&
                                sys_issue_now &&
                                (in_if.data.control_signal.alu.sys_op == SYS_MRET);
-    assign csr_trap_mepc     = interrupt_take ? interrupt_mepc : in_if.data.datapath.pc;
+    assign csr_trap_mepc     = interrupt_take ? interrupt_mepc :
+                               mem_addr_misaligned_now ? selected_mem_datapath.pc :
+                                                        in_if.data.datapath.pc;
     assign csr_trap_mcause   = interrupt_take ? interrupt_mcause :
                                 branch_addr_misaligned_now ? MCAUSE_INSTR_ADDR_MISALIGNED :
                                 mem_load_misaligned_now ? MCAUSE_LOAD_ADDR_MISALIGNED :
@@ -310,28 +449,128 @@ module execution_stage (
         end
     end
 
-    assign in_if.ready = !lsu_resp_valid &&
-                         (!in_if.valid ||
-                          (in_if.data.fu_sel != FU_MEM) ||
-                          mem_addr_misaligned_candidate ||
-                          lsu_req_ready);
+    assign fp0_out_ready = !lsu_resp_valid;
+    assign fp_long_select_lane1 =
+        !issue0_fp_long_candidate && issue1_fp_long_candidate;
+    assign fp_long_control =
+        fp_long_select_lane1 ? in1_if.data.control_signal.alu :
+                               in_if.data.control_signal.alu;
+    assign fp_long_datapath =
+        fp_long_select_lane1 ? in1_if.data.datapath :
+                               in_if.data.datapath;
+    assign fp_long_out_ready = !lsu_resp_valid && !fp0_out_valid;
+    assign in_if.ready =
+        !in_if.valid ||
+        (issue0_fp_long_candidate ?
+             fp_long_in_ready :
+         issue0_fp_candidate ?
+             fp0_in_ready :
+             (!fp0_out_valid &&
+              !fp_long_out_valid &&
+              !lsu_resp_valid &&
+              ((in_if.data.fu_sel != FU_MEM) ||
+               mem_addr_misaligned_candidate ||
+               lsu_req_ready)));
 
     alu u_alu (
         .control_signal(in_if.data.control_signal.alu),
         .datapath      (in_if.data.datapath),
-        .result        (alu_result)
+        .fp_frm        (fp_frm_value),
+        .result        (alu_result),
+        .fp_flags      (alu_fp_flags)
     );
 
     alu u_alu1 (
         .control_signal(in1_if.data.control_signal.alu),
         .datapath      (in1_if.data.datapath),
-        .result        (alu1_result)
+        .fp_frm        (fp_frm_value),
+        .result        (alu1_result),
+        .fp_flags      (alu1_fp_flags)
+    );
+
+    fp_execution_pipeline #(
+        .LATENCY(3)
+    ) u_fp_pipe0 (
+        .clk                  (in_if.clk),
+        .rst_n                (in_if.rst_n),
+        .flush                (interrupt_take),
+        .squash_en            (branch_squash_now),
+        .squash_checkpoint_id (resolve_cp_id_now),
+        .resolve_en           (resolve_now),
+        .resolve_checkpoint_id(resolve_cp_id_now),
+        .in_valid             (issue0_fp_candidate && !interrupt_take),
+        .in_ready             (fp0_in_ready),
+        .in_control           (in_if.data.control_signal.alu),
+        .in_datapath          (in_if.data.datapath),
+        .fp_frm               (fp_frm_value),
+        .out_valid            (fp0_out_valid),
+        .out_ready            (fp0_out_ready),
+        .out_tag              (fp0_out_tag),
+        .out_preg             (fp0_out_preg),
+        .out_dest_is_fp       (fp0_out_dest_is_fp),
+        .out_reg_write        (fp0_out_reg_write),
+        .out_result           (fp0_out_result),
+        .out_flags            (fp0_out_flags)
+    );
+
+    fp_execution_pipeline #(
+        .LATENCY(3)
+    ) u_fp_pipe1 (
+        .clk                  (in_if.clk),
+        .rst_n                (in_if.rst_n),
+        .flush                (interrupt_take),
+        .squash_en            (branch_squash_now),
+        .squash_checkpoint_id (resolve_cp_id_now),
+        .resolve_en           (resolve_now),
+        .resolve_checkpoint_id(resolve_cp_id_now),
+        .in_valid             (issue1_fp_candidate && !interrupt_take),
+        .in_ready             (fp1_in_ready),
+        .in_control           (in1_if.data.control_signal.alu),
+        .in_datapath          (in1_if.data.datapath),
+        .fp_frm               (fp_frm_value),
+        .out_valid            (fp1_out_valid),
+        .out_ready            (1'b1),
+        .out_tag              (fp1_out_tag),
+        .out_preg             (fp1_out_preg),
+        .out_dest_is_fp       (fp1_out_dest_is_fp),
+        .out_reg_write        (fp1_out_reg_write),
+        .out_result           (fp1_out_result),
+        .out_flags            (fp1_out_flags)
+    );
+
+    fp_div_sqrt_iterative #(
+        .DIV_LATENCY (16),
+        .SQRT_LATENCY(24)
+    ) u_fp_div_sqrt (
+        .clk                  (in_if.clk),
+        .rst_n                (in_if.rst_n),
+        .flush                (interrupt_take),
+        .squash_en            (branch_squash_now),
+        .squash_checkpoint_id (resolve_cp_id_now),
+        .resolve_en           (resolve_now),
+        .resolve_checkpoint_id(resolve_cp_id_now),
+        .in_valid             ((issue0_fp_long_candidate ||
+                                issue1_fp_long_candidate) &&
+                               !interrupt_take),
+        .in_ready             (fp_long_in_ready),
+        .in_control           (fp_long_control),
+        .in_datapath          (fp_long_datapath),
+        .fp_frm               (fp_frm_value),
+        .out_valid            (fp_long_out_valid),
+        .out_ready            (fp_long_out_ready),
+        .out_tag              (fp_long_out_tag),
+        .out_preg             (fp_long_out_preg),
+        .out_dest_is_fp       (fp_long_out_dest_is_fp),
+        .out_reg_write        (fp_long_out_reg_write),
+        .out_result           (fp_long_out_result),
+        .out_flags            (fp_long_out_flags),
+        .busy                 (fp_long_busy)
     );
 
     csr_file u_csr_file (
         .clk       (in_if.clk),
         .rst_n     (in_if.rst_n),
-        .csr_en    (csr_write_en),
+        .csr_en    (machine_csr_write_en),
         .csr_op    (in_if.data.control_signal.alu.csr_op),
         .csr_addr  (in_if.data.control_signal.alu.csr_addr),
         .csr_wdata (csr_operand),
@@ -343,6 +582,7 @@ module execution_stage (
         .software_irq_pending(software_irq_pending),
         .timer_irq_pending(timer_irq_pending),
         .external_irq_pending(external_irq_pending),
+        .fp_state_dirty(fp_state_dirty),
         .csr_rdata (csr_result),
         .mstatus_value(csr_mstatus_value),
         .mie_value (csr_mie_value),
@@ -350,7 +590,9 @@ module execution_stage (
         .mepc_value(csr_mepc_value)
     );
 
-    lsu u_lsu (
+    lsu #(
+        .MEM_WORDS(MEM_WORDS)
+    ) u_lsu (
         .clk           (in_if.clk),
         .rst_n         (in_if.rst_n),
         .req_valid     (lsu_req_valid),
@@ -359,12 +601,17 @@ module execution_stage (
         .squash_checkpoint_id(resolve_cp_id_now),
         .resolve_en    (resolve_now),
         .resolve_checkpoint_id(resolve_cp_id_now),
+        .commit_store_valid0(commit_store_valid0),
+        .commit_store_tag0(commit_store_tag0),
+        .commit_store_valid1(commit_store_valid1),
+        .commit_store_tag1(commit_store_tag1),
         .control_signal(lsu_control_safe),
-        .datapath      (in_if.data.datapath),
+        .datapath      (selected_mem_datapath),
         .resp_valid    (lsu_resp_valid),
         .resp_tag      (lsu_resp_tag),
         .resp_preg     (lsu_resp_preg),
         .resp_reg_write(lsu_resp_reg_write),
+        .resp_dest_is_fp(lsu_resp_dest_is_fp),
         .resp_result   (lsu_resp_result)
     );
 
@@ -379,22 +626,26 @@ module execution_stage (
     always_ff @(posedge in_if.clk or negedge in_if.rst_n) begin
         if (!in_if.rst_n) begin
             wb_valid  <= 1'b0;
+            wb_is_fp  <= 1'b0;
             wb_preg   <= '0;
             wb_tag    <= '0;
             wb_result <= '0;
             wb1_valid  <= 1'b0;
+            wb1_is_fp  <= 1'b0;
             wb1_preg   <= '0;
             wb1_tag    <= '0;
             wb1_result <= '0;
             complete_valid <= 1'b0;
             complete_tag   <= '0;
             complete_result <= '0;
+            complete_fp_flags <= '0;
             branch_complete_valid <= 1'b0;
             branch_complete_tag   <= '0;
             branch_complete_result <= '0;
             lane1_complete_valid <= 1'b0;
             lane1_complete_tag   <= '0;
             lane1_complete_result <= '0;
+            lane1_complete_fp_flags <= '0;
             pc_src    <= 1'b0;
             pc_branch <= '0;
             recover_rat <= 1'b0;
@@ -420,22 +671,26 @@ module execution_stage (
             end
         end else begin
             wb_valid  <= 1'b0;
+            wb_is_fp  <= 1'b0;
             wb_preg   <= '0;
             wb_tag    <= '0;
             wb_result <= '0;
             wb1_valid  <= 1'b0;
+            wb1_is_fp  <= 1'b0;
             wb1_preg   <= '0;
             wb1_tag    <= '0;
             wb1_result <= '0;
             complete_valid <= 1'b0;
             complete_tag   <= '0;
             complete_result <= '0;
+            complete_fp_flags <= '0;
             branch_complete_valid <= br_pipe_valid[BR_RESOLVE_LAT-1];
             branch_complete_tag   <= br_pipe_valid[BR_RESOLVE_LAT-1] ? br_pipe_tag[BR_RESOLVE_LAT-1] : '0;
             branch_complete_result <= '0;
             lane1_complete_valid <= 1'b0;
             lane1_complete_tag   <= '0;
             lane1_complete_result <= '0;
+            lane1_complete_fp_flags <= '0;
             branch_resolve <= br_pipe_valid[BR_RESOLVE_LAT-1];
             resolve_checkpoint_id <= br_pipe_valid[BR_RESOLVE_LAT-1] ? br_pipe_cp_id[BR_RESOLVE_LAT-1] : '0;
             pc_src    <= br_pipe_valid[BR_RESOLVE_LAT-1] && br_pipe_pc_src[BR_RESOLVE_LAT-1];
@@ -447,18 +702,44 @@ module execution_stage (
             bp_update_is_jalr <= br_pipe_valid[BR_RESOLVE_LAT-1] && br_pipe_bp_is_jalr[BR_RESOLVE_LAT-1];
             bp_update_target <= br_pipe_valid[BR_RESOLVE_LAT-1] ? br_pipe_bp_target[BR_RESOLVE_LAT-1] : '0;
 
-            if (issue1_alu_fire) begin
+            if (fp1_out_valid) begin
+                lane1_complete_valid <= 1'b1;
+                lane1_complete_tag <= fp1_out_tag;
+                lane1_complete_result <= fp1_out_result;
+                lane1_complete_fp_flags <= fp1_out_flags;
+
+                if (fp1_out_reg_write &&
+                    (fp1_out_dest_is_fp || (fp1_out_preg != '0))) begin
+                    wb1_valid <= 1'b1;
+                    wb1_is_fp <= fp1_out_dest_is_fp;
+                    wb1_preg <= fp1_out_preg;
+                    wb1_tag <= fp1_out_tag;
+                    wb1_result <= fp1_out_result;
+                end
+            end else if (issue1_alu_fire) begin
                 lane1_complete_valid <= 1'b1;
                 lane1_complete_tag   <= in1_if.data.datapath.rob_tag;
                 lane1_complete_result <= alu1_result;
+                lane1_complete_fp_flags <= alu1_fp_flags;
 
                 if (in1_if.data.control_signal.alu.reg_write &&
-                    (in1_if.data.datapath.new_des_preg != '0)) begin
+                    (in1_if.data.datapath.dest_is_fp ||
+                     (in1_if.data.datapath.new_des_preg != '0))) begin
                     wb1_valid  <= 1'b1;
+                    wb1_is_fp  <= in1_if.data.datapath.dest_is_fp;
                     wb1_preg   <= in1_if.data.datapath.new_des_preg;
                     wb1_tag    <= in1_if.data.datapath.rob_tag;
                     wb1_result <= alu1_result;
                 end
+            end
+
+            if (issue1_mem_fire && mem_addr_misaligned_now) begin
+                lane1_complete_valid <= 1'b1;
+                lane1_complete_tag   <= selected_mem_datapath.rob_tag;
+                lane1_complete_result <= '0;
+                pc_src    <= 1'b1;
+                pc_branch <= exception_vector_pc;
+                recover_rat <= 1'b0;
             end
 
             if (interrupt_take) begin
@@ -490,16 +771,51 @@ module execution_stage (
 
                 if (lsu_resp_reg_write) begin
                     wb_valid  <= 1'b1;
+                    wb_is_fp  <= lsu_resp_dest_is_fp;
                     wb_preg   <= lsu_resp_preg;
                     wb_tag    <= lsu_resp_tag;
                     wb_result <= lsu_resp_result;
                 end
+            end else if (fp0_out_valid) begin
+                complete_valid <= 1'b1;
+                complete_tag <= fp0_out_tag;
+                complete_result <= fp0_out_result;
+                complete_fp_flags <= fp0_out_flags;
+
+                if (fp0_out_reg_write &&
+                    (fp0_out_dest_is_fp || (fp0_out_preg != '0))) begin
+                    wb_valid <= 1'b1;
+                    wb_is_fp <= fp0_out_dest_is_fp;
+                    wb_preg <= fp0_out_preg;
+                    wb_tag <= fp0_out_tag;
+                    wb_result <= fp0_out_result;
+                end
+            end else if (fp_long_out_valid) begin
+                complete_valid <= 1'b1;
+                complete_tag <= fp_long_out_tag;
+                complete_result <= fp_long_out_result;
+                complete_fp_flags <= fp_long_out_flags;
+
+                if (fp_long_out_reg_write &&
+                    (fp_long_out_dest_is_fp ||
+                     (fp_long_out_preg != '0))) begin
+                    wb_valid <= 1'b1;
+                    wb_is_fp <= fp_long_out_dest_is_fp;
+                    wb_preg <= fp_long_out_preg;
+                    wb_tag <= fp_long_out_tag;
+                    wb_result <= fp_long_out_result;
+                end
             end
 
-            if (!lsu_resp_valid && !interrupt_take && in_if.valid && in_if.ready) begin
+            if (!lsu_resp_valid && !fp0_out_valid && !fp_long_out_valid &&
+                !interrupt_take && in_if.valid && in_if.ready) begin
                 unique case (in_if.data.fu_sel)
                     FU_ALU: begin
-                        if (in_if.data.control_signal.alu.sys_en) begin
+                        if (issue0_fp_candidate ||
+                            issue0_fp_long_candidate) begin
+                            // Multi-cycle FP operations complete through
+                            // u_fp_pipe0 rather than the scalar ALU path.
+                        end else if (in_if.data.control_signal.alu.sys_en) begin
                             complete_valid <= 1'b1;
                             complete_tag   <= in_if.data.datapath.rob_tag;
                             complete_result <= '0;
@@ -524,14 +840,17 @@ module execution_stage (
                             complete_valid <= 1'b1;
                             complete_tag   <= in_if.data.datapath.rob_tag;
                             complete_result <= in_if.data.control_signal.alu.csr_en ?
-                                               csr_result : alu_result;
+                                               selected_csr_result : alu_result;
+                            complete_fp_flags <= alu_fp_flags;
 
-                            if (in_if.data.datapath.new_des_preg != '0) begin
+                            if (in_if.data.datapath.dest_is_fp ||
+                                (in_if.data.datapath.new_des_preg != '0)) begin
                                 wb_valid  <= 1'b1;
+                                wb_is_fp  <= in_if.data.datapath.dest_is_fp;
                                 wb_preg   <= in_if.data.datapath.new_des_preg;
                                 wb_tag    <= in_if.data.datapath.rob_tag;
                                 wb_result <= in_if.data.control_signal.alu.csr_en ?
-                                             csr_result : alu_result;
+                                             selected_csr_result : alu_result;
                             end
                         end
                     end
@@ -558,8 +877,10 @@ module execution_stage (
                             pc_branch <= exception_vector_pc;
                             recover_rat <= 1'b0;
                         end else if (in_if.data.control_signal.branch.jump &&
-                            (in_if.data.datapath.new_des_preg != '0)) begin
+                            (in_if.data.datapath.dest_is_fp ||
+                             (in_if.data.datapath.new_des_preg != '0))) begin
                             wb_valid  <= 1'b1;
+                            wb_is_fp  <= in_if.data.datapath.dest_is_fp;
                             wb_preg   <= in_if.data.datapath.new_des_preg;
                             wb_tag    <= in_if.data.datapath.rob_tag;
                             wb_result <= branch_link_result;

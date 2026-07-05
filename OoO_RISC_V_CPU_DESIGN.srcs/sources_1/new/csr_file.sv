@@ -15,6 +15,7 @@ module csr_file (
     input  logic                          software_irq_pending,
     input  logic                          timer_irq_pending,
     input  logic                          external_irq_pending,
+    input  logic                          fp_state_dirty,
 
     output logic [defines_pkg::WIDTH-1:0] csr_rdata,
     output logic [defines_pkg::WIDTH-1:0] mstatus_value,
@@ -28,7 +29,12 @@ module csr_file (
     localparam int MSTATUS_MPIE_BIT     = 7;
     localparam int MSTATUS_MPP_LSB      = 11;
     localparam int MSTATUS_MPP_MSB      = 12;
+    localparam int MSTATUS_FS_LSB       = 13;
+    localparam int MSTATUS_FS_MSB       = 14;
+    localparam int MSTATUS_SD_BIT       = 31;
     localparam logic [1:0] PRV_M         = 2'b11;
+    localparam logic [1:0] FS_OFF        = 2'b00;
+    localparam logic [1:0] FS_DIRTY      = 2'b11;
 
     logic [WIDTH-1:0] mstatus_q;
     logic [WIDTH-1:0] mie_q;
@@ -38,21 +44,29 @@ module csr_file (
     logic [WIDTH-1:0] mtval_q;
     logic [WIDTH-1:0] mip_q;
     logic [WIDTH-1:0] write_value;
+    logic [WIDTH-1:0] mstatus_visible;
 
-    assign mstatus_value = mstatus_q;
+    always_comb begin
+        mstatus_visible = mstatus_q;
+        mstatus_visible[MSTATUS_SD_BIT] =
+            (mstatus_q[MSTATUS_FS_MSB:MSTATUS_FS_LSB] == FS_DIRTY);
+    end
+
+    assign mstatus_value = mstatus_visible;
     assign mie_value     = mie_q;
     assign mtvec_value   = mtvec_q;
     assign mepc_value    = mepc_q;
 
     always_comb begin
         unique case (csr_addr)
-            CSR_MSTATUS: csr_rdata = mstatus_q;
+            CSR_MSTATUS: csr_rdata = mstatus_visible;
             CSR_MIE:     csr_rdata = mie_q;
             CSR_MTVEC:   csr_rdata = mtvec_q;
             CSR_MEPC:    csr_rdata = mepc_q;
             CSR_MCAUSE:  csr_rdata = mcause_q;
             CSR_MTVAL:   csr_rdata = mtval_q;
             CSR_MIP:     csr_rdata = mip_q;
+            CSR_MHARTID: csr_rdata = '0;
             default:     csr_rdata = '0;
         endcase
     end
@@ -78,7 +92,12 @@ module csr_file (
         end else begin
             if (csr_en) begin
                 unique case (csr_addr)
-                    CSR_MSTATUS: mstatus_q <= write_value;
+                    CSR_MSTATUS: begin
+                        mstatus_q <= write_value;
+                        mstatus_q[MSTATUS_SD_BIT] <=
+                            (write_value[MSTATUS_FS_MSB:MSTATUS_FS_LSB] ==
+                             FS_DIRTY);
+                    end
                     CSR_MIE:     mie_q     <= write_value;
                     CSR_MTVEC:   mtvec_q   <= write_value;
                     CSR_MEPC:    mepc_q    <= write_value;
@@ -103,6 +122,12 @@ module csr_file (
                 mstatus_q[MSTATUS_MIE_BIT]  <= mstatus_q[MSTATUS_MPIE_BIT];
                 mstatus_q[MSTATUS_MPIE_BIT] <= 1'b1;
                 mstatus_q[MSTATUS_MPP_MSB:MSTATUS_MPP_LSB] <= 2'b00;
+            end
+
+            if (fp_state_dirty &&
+                (mstatus_q[MSTATUS_FS_MSB:MSTATUS_FS_LSB] != FS_OFF)) begin
+                mstatus_q[MSTATUS_FS_MSB:MSTATUS_FS_LSB] <= FS_DIRTY;
+                mstatus_q[MSTATUS_SD_BIT] <= 1'b1;
             end
 
             mip_q[3]  <= software_irq_pending;

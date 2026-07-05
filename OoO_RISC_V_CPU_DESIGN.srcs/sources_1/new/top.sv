@@ -1,3 +1,5 @@
+`timescale 1ns / 1ps
+
 // Legacy scalar-oriented integration top.
 // New development should target top_packet_backend.sv unless explicitly
 // validating backward compatibility with the original scalar path.
@@ -69,6 +71,7 @@ module top (
     logic           retire_valid;
     preg_t          retire_preg;
     logic           commit_en;
+    logic           commit_store_valid;
 
     logic           pc_src_exe;
     logic [WIDTH-1:0] pc_branch_exe;
@@ -183,6 +186,9 @@ module top (
     
 
     assign commit_en    = rob_head_valid_i && rob_head_complete_i;
+    // LSU store buffer filters by tag, so forwarding every committed ROB tag
+    // is safe and avoids depending on duplicate ROB-side store metadata.
+    assign commit_store_valid = commit_en;
     assign retire_valid = commit_en &&
                           (rob_head.datapath.new_des_preg != '0) &&
                           (rob_head.datapath.rd != '0);
@@ -370,23 +376,34 @@ module top (
         .interrupt_take (interrupt_take),
         .interrupt_mepc (interrupt_mepc),
         .interrupt_mcause(interrupt_mcause),
+        .fp_frm_value   (3'b000),
+        .fp_csr_rdata   (32'b0),
+        .fp_state_dirty (1'b0),
+        .commit_store_valid0(commit_store_valid),
+        .commit_store_tag0(rob_head.datapath.rob_tag),
+        .commit_store_valid1(1'b0),
+        .commit_store_tag1('0),
         .wb_valid       (wb_valid),
+        .wb_is_fp       (),
         .wb_preg        (wb_preg),
         .wb_tag         (wb_tag),
         .wb_result      (wb_result),
         .wb1_valid      (wb1_dummy_valid),
+        .wb1_is_fp      (),
         .wb1_preg       (wb1_dummy_preg),
         .wb1_tag        (wb1_dummy_tag),
         .wb1_result     (wb1_dummy_result),
         .complete_valid (complete_valid),
         .complete_tag   (complete_tag),
         .complete_result(complete_result),
+        .complete_fp_flags(),
         .branch_complete_valid(branch_complete_valid),
         .branch_complete_tag(branch_complete_tag),
         .branch_complete_result(branch_complete_result),
         .lane1_complete_valid(lane1_dummy_complete_valid),
         .lane1_complete_tag(lane1_dummy_complete_tag),
         .lane1_complete_result(lane1_dummy_complete_result),
+        .lane1_complete_fp_flags(),
         .resolve_checkpoint_id(resolve_checkpoint_id_exe),
         .bp_update_valid(bp_update_valid_exe),
         .bp_update_pc   (bp_update_pc_exe),
@@ -398,6 +415,9 @@ module top (
         .recover_rat    (recover_rat_exe),
         .csr_mstatus_value(csr_mstatus_value),
         .csr_mie_value  (csr_mie_value),
+        .fp_csr_write_en(),
+        .fp_csr_write_addr(),
+        .fp_csr_write_data(),
         .branch_resolve (branch_resolve_exe)
     );
 

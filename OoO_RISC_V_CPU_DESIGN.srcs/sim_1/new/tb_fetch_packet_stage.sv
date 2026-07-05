@@ -106,6 +106,44 @@ module tb_fetch_packet_stage;
         write_word(32'd24, 32'h00b0_0393); // addi x7, x0, 11
         write_word(32'd32, 32'h0090_0293); // addi x5, x0, 9
         write_word(32'd36, 32'h00a0_0313); // addi x6, x0, 10
+        write_word(32'd40, 32'h0010_0413); // addi x8, x0, 1
+        write_word(32'd44, 32'h00c0_006f); // jal  x0, +12 -> 56
+        write_word(32'd48, 32'h0630_0493); // wrong path
+        write_word(32'd56, 32'h00b0_0513); // addi x10, x0, 11
+        write_word(32'd64, 32'h0010_0613); // addi x12, x0, 1
+        write_word(32'd68, 32'h0000_0663); // beq x0, x0, +12 -> 80
+        write_word(32'd72, 32'h0630_0693); // predicted-away path
+        write_word(32'd80, 32'h0160_0713); // addi x14, x0, 22
+        write_word(32'd84, 32'h0010_0793); // addi x15, x0, 1
+        write_word(32'd88, 32'h0000_8067); // jalr x0,0(x1), trained -> 100
+        write_word(32'd92, 32'h0630_0813); // predicted-away path
+        write_word(32'd100, 32'h0210_0893); // addi x17, x0, 33
+        write_word(32'd104, 32'h0010_0913); // addi x18, x0, 1
+        write_word(32'd108, 32'h0001_0067); // jalr x0,0(x2), miss -> 120
+        write_word(32'd112, 32'h0630_0993); // blocked fall-through
+        write_word(32'd120, 32'h02c0_0a13); // addi x20, x0, 44
+
+        bp_update_valid = 1'b1;
+        bp_update_pc = 32'd68;
+        bp_update_taken = 1'b1;
+        bp_update_target = 32'd80;
+        step_clk;
+        bp_update_valid = 1'b0;
+        bp_update_pc = '0;
+        bp_update_taken = 1'b0;
+        bp_update_target = '0;
+
+        bp_update_valid = 1'b1;
+        bp_update_pc = 32'd88;
+        bp_update_taken = 1'b1;
+        bp_update_is_jalr = 1'b1;
+        bp_update_target = 32'd100;
+        step_clk;
+        bp_update_valid = 1'b0;
+        bp_update_pc = '0;
+        bp_update_taken = 1'b0;
+        bp_update_is_jalr = 1'b0;
+        bp_update_target = '0;
 
         load_en = 1'b0;
         fetch_if.ready = 1'b1;
@@ -126,12 +164,10 @@ module tb_fetch_packet_stage;
 
         step_clk;
         check_ok(fetch_if.data.lane0.data.pc == 32'd12, "post-control packet resumes at fall-through");
-        check_ok(fetch_if.data.lane1.valid == 1'b0, "lane1 suppressed when lane1 would be control flow");
-
-        step_clk;
-        check_ok(fetch_if.data.lane0.data.pc == 32'd16, "lane1 control flow is refetched as lane0");
-        check_ok(fetch_if.data.lane0.data.instr == 32'h0010_0063, "refetched lane0 control instruction");
-        check_ok(fetch_if.data.lane1.valid == 1'b0, "refetched lane0 control suppresses lane1");
+        check_ok(fetch_if.data.lane1.valid == 1'b1, "lane1 conditional branch remains in packet");
+        check_ok(fetch_if.data.lane1.data.pc == 32'd16, "lane1 branch pc is preserved");
+        check_ok(fetch_if.data.lane1.data.instr == 32'h0010_0063, "lane1 branch instruction is preserved");
+        check_ok(!fetch_if.data.lane1.data.pred_taken, "untrained lane1 branch predicts not taken");
 
         step_clk;
         check_ok(fetch_if.data.lane0.data.pc == 32'd20, "packet resumes after lane1 control flow");
@@ -165,6 +201,96 @@ module tb_fetch_packet_stage;
         check_ok(fetch_if.data.lane1.data.pc == 32'd36, "redirect target lane1 pc");
         check_ok(fetch_if.data.lane0.data.instr == 32'h0090_0293, "redirect target lane0 instruction");
         check_ok(fetch_if.data.lane1.data.instr == 32'h00a0_0313, "redirect target lane1 instruction");
+
+        step_clk;
+        check_ok(fetch_if.data.lane0.data.pc == 32'd40, "lane1 JAL packet starts at pc 40");
+        check_ok(fetch_if.data.lane1.valid, "lane1 JAL remains valid");
+        check_ok(fetch_if.data.lane1.data.pc == 32'd44, "lane1 JAL pc is preserved");
+        check_ok(fetch_if.data.lane1.data.instr == 32'h00c0_006f, "lane1 JAL instruction is preserved");
+        check_ok(fetch_if.data.lane1.data.pred_taken, "lane1 JAL predicts taken");
+        check_ok(fetch_if.data.lane1.data.pred_target == 32'd56, "lane1 JAL computes direct target");
+
+        step_clk;
+        check_ok(!fetch_if.valid, "lane1 JAL redirect inserts redirect hold cycle");
+        step_clk;
+        check_ok(fetch_if.valid && fetch_if.data.lane0.data.pc == 32'd56,
+                 "lane1 JAL target packet is fetched");
+
+        pc_src = 1'b1;
+        pc_branch = 32'd64;
+        #1;
+        check_ok(!fetch_if.valid, "second explicit redirect suppresses output");
+        step_clk;
+        pc_src = 1'b0;
+        step_clk;
+        #1;
+        check_ok(fetch_if.valid && fetch_if.data.lane0.data.pc == 32'd64,
+                 "trained lane1 branch packet is fetched");
+        check_ok(fetch_if.data.lane1.valid &&
+                 fetch_if.data.lane1.data.pc == 32'd68,
+                 "trained branch remains in lane1");
+        check_ok(fetch_if.data.lane1.data.pred_taken,
+                 "trained lane1 branch predicts taken");
+        check_ok(fetch_if.data.lane1.data.pred_target == 32'd80,
+                 "trained lane1 branch uses BTB target");
+
+        step_clk;
+        check_ok(!fetch_if.valid, "lane1 branch prediction inserts redirect hold cycle");
+        step_clk;
+        check_ok(fetch_if.valid && fetch_if.data.lane0.data.pc == 32'd80,
+                 "trained lane1 branch target packet is fetched");
+
+        pc_src = 1'b1;
+        pc_branch = 32'd84;
+        step_clk;
+        pc_src = 1'b0;
+        step_clk;
+        #1;
+        check_ok(fetch_if.valid && fetch_if.data.lane0.data.pc == 32'd84,
+                 "lane1 JALR hit packet is fetched");
+        check_ok(fetch_if.data.lane1.valid &&
+                 fetch_if.data.lane1.data.pc == 32'd88,
+                 "JALR target-cache hit remains in lane1");
+        check_ok(fetch_if.data.lane1.data.pred_taken,
+                 "lane1 JALR target-cache hit predicts taken");
+        check_ok(fetch_if.data.lane1.data.pred_target == 32'd100,
+                 "lane1 JALR hit returns trained target");
+
+        step_clk;
+        check_ok(!fetch_if.valid, "lane1 JALR hit inserts redirect hold cycle");
+        step_clk;
+        check_ok(fetch_if.valid && fetch_if.data.lane0.data.pc == 32'd100,
+                 "lane1 JALR hit target packet is fetched");
+
+        pc_src = 1'b1;
+        pc_branch = 32'd104;
+        step_clk;
+        pc_src = 1'b0;
+        step_clk;
+        #1;
+        check_ok(fetch_if.valid && fetch_if.data.lane0.data.pc == 32'd104,
+                 "lane1 JALR miss packet is fetched");
+        check_ok(fetch_if.data.lane1.valid &&
+                 fetch_if.data.lane1.data.pc == 32'd108,
+                 "JALR target-cache miss remains in lane1");
+        check_ok(!fetch_if.data.lane1.data.pred_taken,
+                 "untrained lane1 JALR reports prediction miss");
+
+        step_clk;
+        check_ok(!fetch_if.valid && dut.jalr_wait_q,
+                 "lane1 JALR miss stalls fetch after packet acceptance");
+        step_clk;
+        check_ok(!fetch_if.valid && dut.jalr_wait_q,
+                 "lane1 JALR miss keeps fetch stalled");
+
+        pc_src = 1'b1;
+        pc_branch = 32'd120;
+        step_clk;
+        pc_src = 1'b0;
+        step_clk;
+        #1;
+        check_ok(fetch_if.valid && fetch_if.data.lane0.data.pc == 32'd120,
+                 "JALR execution redirect releases lane1 miss wait");
 
         $display("==== tb_fetch_packet_stage PASS ====");
         $finish;

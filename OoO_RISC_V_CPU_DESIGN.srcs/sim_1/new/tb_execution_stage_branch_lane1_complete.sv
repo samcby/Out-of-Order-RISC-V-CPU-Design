@@ -50,6 +50,10 @@ module tb_execution_stage_branch_lane1_complete;
         .interrupt_take(1'b0),
         .interrupt_mepc('0),
         .interrupt_mcause('0),
+        .commit_store_valid0(1'b0),
+        .commit_store_tag0('0),
+        .commit_store_valid1(1'b0),
+        .commit_store_tag1('0),
         .wb_valid(wb_valid),
         .wb_preg(wb_preg),
         .wb_tag(wb_tag),
@@ -110,6 +114,59 @@ module tb_execution_stage_branch_lane1_complete;
         issue1_if.data = '0;
 
         repeat (2) step_clk;
+        rst_n = 1'b1;
+        step_clk;
+
+        issue0_if.valid = 1'b1;
+        issue0_if.data = '0;
+        issue0_if.data.fu_sel = FU_BRANCH;
+        issue0_if.data.control_signal.branch.branch = 1'b1;
+        issue0_if.data.control_signal.branch.funct3 = 3'b000;
+        issue0_if.data.datapath.rob_tag = rob_tag_t'(1);
+        issue0_if.data.datapath.checkpoint_id = cp_id_t'(1);
+        issue0_if.data.datapath.pc = 32'h0000_0020;
+        issue0_if.data.datapath.imm = 32'd8;
+        issue0_if.data.datapath.src1_value = 32'd1;
+        issue0_if.data.datapath.src2_value = 32'd1;
+        issue0_if.data.datapath.pred_taken = 1'b0;
+        issue0_if.data.datapath.pred_target = 32'h0000_0024;
+
+        issue1_if.valid = 1'b1;
+        issue1_if.data = '0;
+        issue1_if.data.fu_sel = FU_MEM;
+        issue1_if.data.control_signal.lsu.mem_write = 1'b1;
+        issue1_if.data.control_signal.lsu.funct3 = 3'b010;
+        issue1_if.data.datapath.rob_tag = rob_tag_t'(2);
+        issue1_if.data.datapath.src1_value = 32'h0000_0000;
+        issue1_if.data.datapath.src2_value = 32'hdead_beef;
+        issue1_if.data.datapath.speculation_mask = cp_mask_t'(4'b0010);
+        #1;
+        check_ok(issue0_if.ready, "branch is accepted on slot0 during branch+MEM issue");
+        check_ok(issue1_if.ready, "younger speculative store is accepted on slot1");
+        step_clk;
+        issue0_if.valid = 1'b0;
+        issue1_if.valid = 1'b0;
+
+        step_clk;
+        check_ok(complete_valid && complete_tag == rob_tag_t'(2),
+                 "slot1 store completes ROB before branch resolution");
+        check_ok(dut.u_lsu.store_buf_valid[0],
+                 "slot1 store is retained speculatively before branch resolution");
+
+        wait_cycles = 0;
+        while (!pc_src && wait_cycles < 16) begin
+            wait_cycles++;
+            step_clk;
+        end
+        check_ok(pc_src, "taken lane0 branch redirects after branch+MEM issue");
+        check_ok(!dut.u_lsu.store_buf_valid[0],
+                 "mispredict squash removes the younger slot1 store");
+        check_ok(!dut.u_lsu.u_data_cache.line_valid[0][0] &&
+                 !dut.u_lsu.u_data_cache.line_valid[0][1],
+                 "squashed slot1 store never modifies the cache");
+
+        rst_n = 1'b0;
+        step_clk;
         rst_n = 1'b1;
         step_clk;
 

@@ -23,6 +23,8 @@ module tb_issue_packet_arbiter;
         .branch_if(branch_if.consumer),
         .issue0_if(issue0_if.producer),
         .issue1_if(issue1_if.producer),
+        .rob_head_valid(1'bx),
+        .rob_head_tag('x),
         .issue0_fu_sel(issue0_fu_sel),
         .issue1_fu_sel(issue1_fu_sel)
     );
@@ -152,10 +154,10 @@ module tb_issue_packet_arbiter;
         clear_inputs();
         set_alu(8'd4, 1'b0, 1'b0);
         set_lsu(8'd5);
-        check_ok(issue0_if.valid && issue0_if.data.fu_sel == FU_MEM, "ALU+MEM puts MEM on lane0");
-        check_ok(issue0_if.data.datapath.rob_tag == 8'd5, "ALU+MEM lane0 preserves MEM tag");
-        check_ok(issue1_if.valid && issue1_if.data.fu_sel == FU_ALU, "ALU+MEM puts ALU on lane1");
-        check_ok(issue1_if.data.datapath.rob_tag == 8'd4, "ALU+MEM lane1 preserves ALU tag");
+        check_ok(issue0_if.valid && issue0_if.data.fu_sel == FU_ALU, "ALU+MEM puts ALU on lane0");
+        check_ok(issue0_if.data.datapath.rob_tag == 8'd4, "ALU+MEM lane0 preserves ALU tag");
+        check_ok(issue1_if.valid && issue1_if.data.fu_sel == FU_MEM, "ALU+MEM puts MEM on lane1");
+        check_ok(issue1_if.data.datapath.rob_tag == 8'd5, "ALU+MEM lane1 preserves MEM tag");
         check_ok(alu_if.ready && !alu1_if.ready && lsu_if.ready && !branch_if.ready, "ALU+MEM consumes both selected inputs");
 
         clear_inputs();
@@ -169,8 +171,10 @@ module tb_issue_packet_arbiter;
         set_lsu(8'd8);
         set_branch(8'd9);
         check_ok(issue0_if.valid && issue0_if.data.fu_sel == FU_BRANCH, "BR+MEM prioritizes branch on lane0");
-        check_ok(!issue1_if.valid, "BR+MEM leaves lane1 idle because lane1 MEM is unsupported");
-        check_ok(branch_if.ready && !lsu_if.ready && !alu_if.ready && !alu1_if.ready, "BR+MEM consumes only branch");
+        check_ok(issue0_if.data.datapath.rob_tag == 8'd9, "BR+MEM lane0 preserves branch tag");
+        check_ok(issue1_if.valid && issue1_if.data.fu_sel == FU_MEM, "BR+MEM places MEM on lane1");
+        check_ok(issue1_if.data.datapath.rob_tag == 8'd8, "BR+MEM lane1 preserves MEM tag");
+        check_ok(branch_if.ready && lsu_if.ready && !alu_if.ready && !alu1_if.ready, "BR+MEM consumes branch and LSU");
 
         clear_inputs();
         set_alu(8'd10, 1'b0, 1'b0);
@@ -207,8 +211,8 @@ module tb_issue_packet_arbiter;
         issue0_if.ready = 1'b1;
         issue1_if.ready = 1'b0;
         #1;
-        check_ok(lsu_if.ready, "lane0 can proceed when lane1 is backpressured");
-        check_ok(issue1_if.valid && !alu_if.ready, "lane1 backpressure stalls only lane1 input");
+        check_ok(alu_if.ready, "lane0 ALU can proceed when lane1 MEM is backpressured");
+        check_ok(issue1_if.valid && !lsu_if.ready, "lane1 backpressure stalls only the MEM input");
 
         $display("==== tb_issue_packet_arbiter PASS ====");
         $finish;

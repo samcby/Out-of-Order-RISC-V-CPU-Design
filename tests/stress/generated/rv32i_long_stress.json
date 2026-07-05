@@ -1,0 +1,27 @@
+{
+  "seed": 25763878,
+  "blocks": 700,
+  "static_instruction_count": 10439,
+  "expected_dynamic_retire_count": 10282,
+  "program_bytes": 41756,
+  "expected_signature_x30": "0xffffa69f",
+  "completion_register": "x31",
+  "completion_value": 1,
+  "instruction_categories": {
+    "setup": 29,
+    "alu_r": 4200,
+    "alu_i": 4200,
+    "store": 700,
+    "load": 700,
+    "branch": 164,
+    "wrong_path": 156,
+    "branch_target": 100,
+    "branch_fallthrough": 64,
+    "jal": 37,
+    "jalr_setup": 38,
+    "jalr": 19,
+    "signature": 30,
+    "tohost": 1,
+    "halt": 1
+  }
+}

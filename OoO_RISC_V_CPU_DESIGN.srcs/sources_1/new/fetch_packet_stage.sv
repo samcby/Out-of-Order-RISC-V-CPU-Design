@@ -1,6 +1,7 @@
 module fetch_packet_stage #(
     parameter int WIDTH = 32,
-    parameter int DEPTH_BYTES = 4096
+    parameter int DEPTH_BYTES = 4096,
+    parameter bit ENABLE_2WIDE = 1'b1
 )(
     input  logic             load_en,
     input  logic [WIDTH-1:0] load_addr,
@@ -49,33 +50,48 @@ module fetch_packet_stage #(
 
     logic lane0_is_control;
     logic lane1_is_control;
+    logic lane1_is_jalr;
     logic [6:0] lane0_opcode;
+    logic [6:0] lane1_opcode;
     logic [WIDTH-1:0] lane0_imm_b;
     logic [WIDTH-1:0] lane0_imm_j;
+    logic [WIDTH-1:0] lane1_imm_b;
+    logic [WIDTH-1:0] lane1_imm_j;
     logic fetch_fire;
     logic lane1_valid;
     logic pred_taken;
     logic [WIDTH-1:0] pred_target;
+    logic lane0_pred_taken;
+    logic [WIDTH-1:0] lane0_pred_target;
+    logic lane1_pred_taken;
+    logic [WIDTH-1:0] lane1_pred_target;
     logic pred_redirect_fire;
     logic jalr_miss_fire;
 
     logic [1:0] bht [0:BHT_ENTRIES-1];
     logic [BHT_W-1:0] fetch_bht_idx;
+    logic [BHT_W-1:0] lane1_bht_idx;
     logic [BHT_W-1:0] update_bht_idx;
     logic [BTB_W-1:0] fetch_btb_idx;
+    logic [BTB_W-1:0] lane1_btb_idx;
     logic [BTB_W-1:0] update_btb_idx;
     logic [WIDTH-BTB_W-3:0] fetch_btb_tag;
+    logic [WIDTH-BTB_W-3:0] lane1_btb_tag;
     logic [WIDTH-BTB_W-3:0] update_btb_tag;
     logic btb_hit;
+    logic lane1_btb_hit;
     logic btb_valid [0:BTB_ENTRIES-1];
     logic [WIDTH-BTB_W-3:0] btb_tag [0:BTB_ENTRIES-1];
     logic [WIDTH-1:0] btb_target [0:BTB_ENTRIES-1];
 
     logic [JALR_W-1:0] fetch_jalr_idx;
+    logic [JALR_W-1:0] lane1_jalr_idx;
     logic [JALR_W-1:0] update_jalr_idx;
     logic [WIDTH-JALR_W-3:0] fetch_jalr_tag;
+    logic [WIDTH-JALR_W-3:0] lane1_jalr_tag;
     logic [WIDTH-JALR_W-3:0] update_jalr_tag;
     logic jalr_hit;
+    logic lane1_jalr_hit;
     logic jalr_valid [0:JALR_ENTRIES-1];
     logic [WIDTH-JALR_W-3:0] jalr_tag [0:JALR_ENTRIES-1];
     logic [WIDTH-1:0] jalr_target [0:JALR_ENTRIES-1];
@@ -93,47 +109,86 @@ module fetch_packet_stage #(
     assign lane1_instr    = start_q ? mem[lane1_word_idx] : '0;
 
     assign lane0_opcode = lane0_instr[6:0];
+    assign lane1_opcode = lane1_instr[6:0];
     assign lane0_imm_b  = {{19{lane0_instr[31]}}, lane0_instr[31], lane0_instr[7],
                            lane0_instr[30:25], lane0_instr[11:8], 1'b0};
     assign lane0_imm_j  = {{11{lane0_instr[31]}}, lane0_instr[31], lane0_instr[19:12],
                            lane0_instr[20], lane0_instr[30:21], 1'b0};
+    assign lane1_imm_b  = {{19{lane1_instr[31]}}, lane1_instr[31], lane1_instr[7],
+                           lane1_instr[30:25], lane1_instr[11:8], 1'b0};
+    assign lane1_imm_j  = {{11{lane1_instr[31]}}, lane1_instr[31], lane1_instr[19:12],
+                           lane1_instr[20], lane1_instr[30:21], 1'b0};
 
     assign fetch_bht_idx  = lane0_pc[BHT_W+1:2];
+    assign lane1_bht_idx  = lane1_pc[BHT_W+1:2];
     assign update_bht_idx = bp_update_pc[BHT_W+1:2];
     assign fetch_btb_idx  = lane0_pc[BTB_W+1:2];
+    assign lane1_btb_idx  = lane1_pc[BTB_W+1:2];
     assign update_btb_idx = bp_update_pc[BTB_W+1:2];
     assign fetch_btb_tag  = lane0_pc[WIDTH-1:BTB_W+2];
+    assign lane1_btb_tag  = lane1_pc[WIDTH-1:BTB_W+2];
     assign update_btb_tag = bp_update_pc[WIDTH-1:BTB_W+2];
     assign fetch_jalr_idx  = lane0_pc[JALR_W+1:2];
+    assign lane1_jalr_idx  = lane1_pc[JALR_W+1:2];
     assign update_jalr_idx = bp_update_pc[JALR_W+1:2];
     assign fetch_jalr_tag  = lane0_pc[WIDTH-1:JALR_W+2];
+    assign lane1_jalr_tag  = lane1_pc[WIDTH-1:JALR_W+2];
     assign update_jalr_tag = bp_update_pc[WIDTH-1:JALR_W+2];
 
     assign btb_hit = btb_valid[fetch_btb_idx] &&
                      (btb_tag[fetch_btb_idx] == fetch_btb_tag);
+    assign lane1_btb_hit = btb_valid[lane1_btb_idx] &&
+                           (btb_tag[lane1_btb_idx] == lane1_btb_tag);
     assign jalr_hit = jalr_valid[fetch_jalr_idx] &&
                       (jalr_tag[fetch_jalr_idx] == fetch_jalr_tag);
+    assign lane1_jalr_hit = jalr_valid[lane1_jalr_idx] &&
+                            (jalr_tag[lane1_jalr_idx] == lane1_jalr_tag);
 
     always_comb begin
-        pred_taken  = 1'b0;
-        pred_target = '0;
+        lane0_pred_taken  = 1'b0;
+        lane0_pred_target = '0;
 
         unique case (lane0_opcode)
             7'b1100011: begin
-                pred_taken  = bht[fetch_bht_idx][1] && btb_hit;
-                pred_target = btb_target[fetch_btb_idx];
+                lane0_pred_taken  = bht[fetch_bht_idx][1] && btb_hit;
+                lane0_pred_target = btb_target[fetch_btb_idx];
             end
             7'b1101111: begin
-                pred_taken  = 1'b1;
-                pred_target = btb_hit ? btb_target[fetch_btb_idx] : (lane0_pc + lane0_imm_j);
+                lane0_pred_taken  = 1'b1;
+                lane0_pred_target = btb_hit ? btb_target[fetch_btb_idx] : (lane0_pc + lane0_imm_j);
             end
             7'b1100111: begin
-                pred_taken  = jalr_hit;
-                pred_target = jalr_target[fetch_jalr_idx];
+                lane0_pred_taken  = jalr_hit;
+                lane0_pred_target = jalr_target[fetch_jalr_idx];
             end
             default: begin
-                pred_taken  = 1'b0;
-                pred_target = '0;
+                lane0_pred_taken  = 1'b0;
+                lane0_pred_target = '0;
+            end
+        endcase
+    end
+
+    always_comb begin
+        lane1_pred_taken  = 1'b0;
+        lane1_pred_target = '0;
+
+        unique case (lane1_opcode)
+            7'b1100011: begin
+                lane1_pred_taken  = bht[lane1_bht_idx][1] && lane1_btb_hit;
+                lane1_pred_target = btb_target[lane1_btb_idx];
+            end
+            7'b1101111: begin
+                lane1_pred_taken  = 1'b1;
+                lane1_pred_target = lane1_btb_hit ? btb_target[lane1_btb_idx] :
+                                                       (lane1_pc + lane1_imm_j);
+            end
+            7'b1100111: begin
+                lane1_pred_taken  = lane1_jalr_hit;
+                lane1_pred_target = jalr_target[lane1_jalr_idx];
+            end
+            default: begin
+                lane1_pred_taken  = 1'b0;
+                lane1_pred_target = '0;
             end
         endcase
     end
@@ -141,13 +196,27 @@ module fetch_packet_stage #(
     assign lane0_is_control = (lane0_opcode == 7'b1100011) ||
                               (lane0_opcode == 7'b1101111) ||
                               (lane0_opcode == 7'b1100111);
-    assign lane1_is_control = (lane1_instr[6:0] == 7'b1100011) ||
-                              (lane1_instr[6:0] == 7'b1101111) ||
-                              (lane1_instr[6:0] == 7'b1100111);
+    assign lane1_is_control = (lane1_opcode == 7'b1100011) ||
+                              (lane1_opcode == 7'b1101111) ||
+                              (lane1_opcode == 7'b1100111);
+    assign lane1_is_jalr = lane1_opcode == 7'b1100111;
 
-    // Keep control-flow instructions in lane0 until branch recovery is fully
-    // two-wide aware. This preserves precise checkpoint/redirect behavior.
-    assign lane1_valid = !lane0_is_control && !lane1_is_control;
+    // A lane1 control-flow instruction is the youngest instruction in the
+    // packet, so it can redirect without invalidating lane0.
+    assign lane1_valid = ENABLE_2WIDE && !lane0_is_control;
+
+    always_comb begin
+        pred_taken = 1'b0;
+        pred_target = '0;
+
+        if (lane0_is_control) begin
+            pred_taken = lane0_pred_taken;
+            pred_target = lane0_pred_target;
+        end else if (lane1_valid && lane1_is_control) begin
+            pred_taken = lane1_pred_taken;
+            pred_target = lane1_pred_target;
+        end
+    end
 
     assign out_if.valid = start_q && !load_en &&
                           !pc_src && !redirect_hold_q &&
@@ -159,20 +228,21 @@ module fetch_packet_stage #(
         out_if.data.lane0.valid = out_if.valid;
         out_if.data.lane0.data.pc = lane0_pc;
         out_if.data.lane0.data.instr = lane0_instr;
-        out_if.data.lane0.data.pred_taken = pred_taken;
-        out_if.data.lane0.data.pred_target = pred_target;
+        out_if.data.lane0.data.pred_taken = lane0_pred_taken;
+        out_if.data.lane0.data.pred_target = lane0_pred_target;
 
         out_if.data.lane1.valid = out_if.valid && lane1_valid;
         out_if.data.lane1.data.pc = lane1_pc;
         out_if.data.lane1.data.instr = lane1_instr;
-        out_if.data.lane1.data.pred_taken = 1'b0;
-        out_if.data.lane1.data.pred_target = '0;
+        out_if.data.lane1.data.pred_taken = lane1_pred_taken;
+        out_if.data.lane1.data.pred_target = lane1_pred_target;
     end
 
     assign fetch_fire = out_if.valid && out_if.ready;
     assign pred_redirect_fire = fetch_fire && pred_taken;
     assign jalr_miss_fire = fetch_fire &&
-                            (lane0_opcode == 7'b1100111) && !jalr_hit;
+                            (((lane0_opcode == 7'b1100111) && !jalr_hit) ||
+                             (lane1_valid && lane1_is_jalr && !lane1_jalr_hit));
 
     always_ff @(posedge out_if.clk or negedge out_if.rst_n) begin
         if (!out_if.rst_n) begin

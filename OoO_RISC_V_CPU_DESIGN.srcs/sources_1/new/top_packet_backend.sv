@@ -1,6 +1,10 @@
 // Primary integration top for the current packetized 2-wide backend.
 // The legacy scalar-oriented integration remains available as top.sv.
-module top_packet_backend (
+module top_packet_backend #(
+    parameter bit ENABLE_2WIDE = 1'b1,
+    parameter int IMEM_DEPTH_BYTES = 4096,
+    parameter int DMEM_WORDS = 256
+)(
     input  logic clk,
     input  logic rst_n,
     input  logic software_irq,
@@ -18,7 +22,10 @@ module top_packet_backend (
 
     output logic        rob_head_valid,
     output logic        rob_head_complete,
-    output logic [4:0]  rob_head_rd
+    output logic [4:0]  rob_head_rd,
+
+    output defines_pkg::retire_trace_t retire_trace0,
+    output defines_pkg::retire_trace_t retire_trace1
 );
 
     import defines_pkg::*;
@@ -38,12 +45,36 @@ module top_packet_backend (
 
     logic lane0_src1_ready;
     logic lane0_src2_ready;
+    logic lane0_src3_ready;
     logic lane1_src1_ready;
     logic lane1_src2_ready;
+    logic lane1_src3_ready;
     logic [WIDTH-1:0] lane0_src1_value;
     logic [WIDTH-1:0] lane0_src2_value;
+    logic [WIDTH-1:0] lane0_src3_value;
     logic [WIDTH-1:0] lane1_src1_value;
     logic [WIDTH-1:0] lane1_src2_value;
+    logic [WIDTH-1:0] lane1_src3_value;
+    logic int_lane0_src1_ready;
+    logic int_lane0_src2_ready;
+    logic int_lane1_src1_ready;
+    logic int_lane1_src2_ready;
+    logic fp_lane0_src1_ready;
+    logic fp_lane0_src2_ready;
+    logic fp_lane0_src3_ready;
+    logic fp_lane1_src1_ready;
+    logic fp_lane1_src2_ready;
+    logic fp_lane1_src3_ready;
+    logic [WIDTH-1:0] int_lane0_src1_value;
+    logic [WIDTH-1:0] int_lane0_src2_value;
+    logic [WIDTH-1:0] int_lane1_src1_value;
+    logic [WIDTH-1:0] int_lane1_src2_value;
+    logic [WIDTH-1:0] fp_lane0_src1_value;
+    logic [WIDTH-1:0] fp_lane0_src2_value;
+    logic [WIDTH-1:0] fp_lane0_src3_value;
+    logic [WIDTH-1:0] fp_lane1_src1_value;
+    logic [WIDTH-1:0] fp_lane1_src2_value;
+    logic [WIDTH-1:0] fp_lane1_src3_value;
 
     rob_t rob_head;
     rob_t rob_head1;
@@ -54,29 +85,49 @@ module top_packet_backend (
     logic rob_empty_i;
 
     logic           wb_valid;
+    logic           wb_is_fp;
     preg_t          wb_preg;
     rob_tag_t       wb_tag;
     logic [WIDTH-1:0] wb_result;
     logic           wb1_valid;
+    logic           wb1_is_fp;
     preg_t          wb1_preg;
     rob_tag_t       wb1_tag;
     logic [WIDTH-1:0] wb1_result;
     logic           complete_valid;
     rob_tag_t       complete_tag;
     logic [WIDTH-1:0] complete_result;
+    logic [4:0]     complete_fp_flags;
     logic           branch_complete_valid;
     rob_tag_t       branch_complete_tag;
     logic [WIDTH-1:0] branch_complete_result;
     logic           lane1_complete_valid;
     rob_tag_t       lane1_complete_tag;
     logic [WIDTH-1:0] lane1_complete_result;
+    logic [4:0]     lane1_complete_fp_flags;
 
     logic           retire_valid;
     logic           retire_valid1;
+    logic [1:0]     retire_is_fp;
     preg_t          retire_preg;
     preg_t          retire_preg1;
     logic           commit_en;
     logic           commit_en1;
+    logic           fp_state_dirty_commit;
+    logic [63:0]    retire_order_q;
+    retire_trace_t  retire_trace0_next;
+    retire_trace_t  retire_trace1_next;
+    logic           commit_store_valid0;
+    logic           commit_store_valid1;
+    logic           fp_commit_flags_valid;
+    logic [4:0]     fp_commit_flags;
+    logic [31:0]    fp_csr_rdata;
+    logic [4:0]     fp_fflags;
+    logic [2:0]     fp_frm;
+    logic [7:0]     fp_fcsr;
+    logic           fp_csr_write_en;
+    logic [11:0]    fp_csr_write_addr;
+    logic [31:0]    fp_csr_write_data;
 
     logic           pc_src_exe;
     logic [WIDTH-1:0] pc_branch_exe;
@@ -141,6 +192,7 @@ module top_packet_backend (
     logic [31:0] perf_issue_count_q;
     logic [31:0] perf_dual_issue_count_q;
     logic [31:0] perf_branch_alu_dual_issue_count_q;
+    logic [31:0] perf_branch_mem_dual_issue_count_q;
     logic [31:0] perf_mem_alu_dual_issue_count_q;
     logic [31:0] perf_alu_alu_dual_issue_count_q;
     logic [31:0] perf_lane1_wb_count_q;
@@ -152,6 +204,7 @@ module top_packet_backend (
     logic [31:0] perf_decode_stall_count_q;
     logic [31:0] perf_rename_stall_count_q;
     logic [31:0] perf_dispatch_stall_count_q;
+    logic [31:0] perf_active_cycle_count_q;
 
     assign flush_exe = pc_src_exe || interrupt_take;
 
@@ -221,15 +274,102 @@ module top_packet_backend (
                             32'b0;
 
     assign commit_en    = rob_head_valid_i && rob_head_complete_i;
-    assign commit_en1   = commit_en && rob_head1_valid_i && rob_head1_complete_i;
+    assign commit_en1   = ENABLE_2WIDE && commit_en &&
+                          rob_head1_valid_i && rob_head1_complete_i;
+    // LSU store buffer filters by tag, so forward every committed ROB tag.
+    // This avoids losing a store commit if ROB-side store metadata is stale.
+    assign commit_store_valid0 = commit_en;
+    assign commit_store_valid1 = commit_en1;
     assign retire_valid = commit_en &&
-                          (rob_head.datapath.new_des_preg != '0) &&
-                          (rob_head.datapath.rd != '0);
+                          (rob_head.datapath.dest_is_fp ||
+                           ((rob_head.datapath.new_des_preg != '0) &&
+                            (rob_head.datapath.rd != '0)));
     assign retire_valid1 = commit_en1 &&
-                           (rob_head1.datapath.new_des_preg != '0) &&
-                           (rob_head1.datapath.rd != '0);
+                           (rob_head1.datapath.dest_is_fp ||
+                            ((rob_head1.datapath.new_des_preg != '0) &&
+                             (rob_head1.datapath.rd != '0)));
+    assign retire_is_fp = {
+        rob_head1.datapath.dest_is_fp,
+        rob_head.datapath.dest_is_fp
+    };
     assign retire_preg  = rob_head.datapath.old_des_preg;
     assign retire_preg1 = rob_head1.datapath.old_des_preg;
+    assign fp_commit_flags =
+        (commit_en ? rob_head.datapath.fp_flags : 5'b0) |
+        (commit_en1 ? rob_head1.datapath.fp_flags : 5'b0);
+    assign fp_commit_flags_valid = |fp_commit_flags;
+
+    function automatic logic updates_fp_state(input logic [31:0] instr);
+        logic [6:0] opcode;
+        logic [11:0] csr_addr;
+    begin
+        opcode = instr[6:0];
+        csr_addr = instr[31:20];
+        unique case (opcode)
+            7'b0000111, // FLW
+            7'b1000011, // FMADD.S
+            7'b1000111, // FMSUB.S
+            7'b1001011, // FNMSUB.S
+            7'b1001111, // FNMADD.S
+            7'b1010011: updates_fp_state = 1'b1; // OP-FP
+            7'b1110011: updates_fp_state =
+                (instr[14:12] != 3'b000) &&
+                ((csr_addr == 12'h001) ||
+                 (csr_addr == 12'h002) ||
+                 (csr_addr == 12'h003));
+            default: updates_fp_state = 1'b0;
+        endcase
+    end
+    endfunction
+
+    assign fp_state_dirty_commit =
+        (commit_en && updates_fp_state(rob_head.datapath.instr)) ||
+        (commit_en1 && updates_fp_state(rob_head1.datapath.instr));
+
+    always_comb begin
+        retire_trace0_next = '0;
+        retire_trace1_next = '0;
+
+        retire_trace0_next.valid = commit_en;
+        retire_trace0_next.order = retire_order_q;
+        retire_trace0_next.pc = rob_head.datapath.pc;
+        retire_trace0_next.instr = rob_head.datapath.instr;
+        retire_trace0_next.rd_wen = retire_valid;
+        retire_trace0_next.rd_is_fp = rob_head.datapath.dest_is_fp;
+        retire_trace0_next.rd = rob_head.datapath.rd;
+        retire_trace0_next.rd_wdata = rob_head.datapath.result;
+        retire_trace0_next.fp_flags = rob_head.datapath.fp_flags;
+        retire_trace0_next.is_store = rob_head.control_signal.store;
+        retire_trace0_next.is_branch = rob_head.control_signal.branch;
+        retire_trace0_next.rob_tag = rob_head.datapath.rob_tag;
+
+        retire_trace1_next.valid = commit_en1;
+        retire_trace1_next.order = retire_order_q + 64'd1;
+        retire_trace1_next.pc = rob_head1.datapath.pc;
+        retire_trace1_next.instr = rob_head1.datapath.instr;
+        retire_trace1_next.rd_wen = retire_valid1;
+        retire_trace1_next.rd_is_fp = rob_head1.datapath.dest_is_fp;
+        retire_trace1_next.rd = rob_head1.datapath.rd;
+        retire_trace1_next.rd_wdata = rob_head1.datapath.result;
+        retire_trace1_next.fp_flags = rob_head1.datapath.fp_flags;
+        retire_trace1_next.is_store = rob_head1.control_signal.store;
+        retire_trace1_next.is_branch = rob_head1.control_signal.branch;
+        retire_trace1_next.rob_tag = rob_head1.datapath.rob_tag;
+    end
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            retire_order_q <= '0;
+            retire_trace0 <= '0;
+            retire_trace1 <= '0;
+        end else begin
+            retire_trace0 <= retire_trace0_next;
+            retire_trace1 <= retire_trace1_next;
+            retire_order_q <= retire_order_q +
+                              64'(commit_en ? 1 : 0) +
+                              64'(commit_en1 ? 1 : 0);
+        end
+    end
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
@@ -244,6 +384,7 @@ module top_packet_backend (
             perf_issue_count_q                 <= '0;
             perf_dual_issue_count_q            <= '0;
             perf_branch_alu_dual_issue_count_q <= '0;
+            perf_branch_mem_dual_issue_count_q <= '0;
             perf_mem_alu_dual_issue_count_q    <= '0;
             perf_alu_alu_dual_issue_count_q    <= '0;
             perf_lane1_wb_count_q              <= '0;
@@ -255,7 +396,12 @@ module top_packet_backend (
             perf_decode_stall_count_q          <= '0;
             perf_rename_stall_count_q          <= '0;
             perf_dispatch_stall_count_q        <= '0;
+            perf_active_cycle_count_q          <= '0;
         end else begin
+            if (!load_en) begin
+                perf_active_cycle_count_q <= perf_active_cycle_count_q + 1'b1;
+            end
+
             if (pipe_fd_pkt.valid && pipe_fd_pkt.ready && pipe_fd_pkt.data.lane0.valid) begin
                 perf_fetch_packet_count_q <= perf_fetch_packet_count_q + 1'b1;
                 if (pipe_fd_pkt.data.lane1.valid) begin
@@ -310,8 +456,15 @@ module top_packet_backend (
                         perf_branch_alu_dual_issue_count_q <= perf_branch_alu_dual_issue_count_q + 1'b1;
                     end
 
-                    if ((issue_if.data.fu_sel == FU_MEM) &&
-                        (issue1_if.data.fu_sel == FU_ALU)) begin
+                    if ((issue_if.data.fu_sel == FU_BRANCH) &&
+                        (issue1_if.data.fu_sel == FU_MEM)) begin
+                        perf_branch_mem_dual_issue_count_q <= perf_branch_mem_dual_issue_count_q + 1'b1;
+                    end
+
+                    if (((issue_if.data.fu_sel == FU_MEM) &&
+                         (issue1_if.data.fu_sel == FU_ALU)) ||
+                        ((issue_if.data.fu_sel == FU_ALU) &&
+                         (issue1_if.data.fu_sel == FU_MEM))) begin
                         perf_mem_alu_dual_issue_count_q <= perf_mem_alu_dual_issue_count_q + 1'b1;
                     end
 
@@ -374,6 +527,65 @@ module top_packet_backend (
         end
     end
 
+`ifndef SYNTHESIS
+    logic [63:0] assert_next_retire_order_q;
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            assert_next_retire_order_q <= '0;
+        end else begin
+            assert (!(lane0_branch_rename_fire && lane1_branch_rename_fire))
+                else $error("CHECKPOINT: one packet allocated two branch checkpoints");
+            if (branch_rename_fire) begin
+                assert (!active_checkpoint_mask_q[branch_rename_checkpoint_id] ||
+                        checkpoint_kill_mask[branch_rename_checkpoint_id])
+                    else $error("CHECKPOINT: allocated active checkpoint id %0d",
+                                branch_rename_checkpoint_id);
+            end
+
+            for (int i = 0; i < CHECKPOINT_NUM; i++) begin
+                if (active_checkpoint_mask_q[i]) begin
+                    assert (!checkpoint_dep_mask_q[i][i])
+                        else $error("CHECKPOINT: checkpoint %0d depends on itself", i);
+                    assert ((checkpoint_dep_mask_q[i] & ~active_checkpoint_mask_q) == '0)
+                        else $error("CHECKPOINT: checkpoint %0d depends on an inactive checkpoint", i);
+                end else begin
+                    assert (checkpoint_dep_mask_q[i] == '0)
+                        else $error("CHECKPOINT: inactive checkpoint %0d retains dependencies", i);
+                end
+            end
+
+            assert (!commit_en1 || commit_en)
+                else $error("RETIRE: lane1 retired without lane0");
+            assert (!retire_trace1.valid || retire_trace0.valid)
+                else $error("RETIRE: trace lane1 is valid without lane0");
+
+            if (retire_trace0.valid) begin
+                assert (retire_trace0.order == assert_next_retire_order_q)
+                    else $error("RETIRE: expected order %0d, got %0d",
+                                assert_next_retire_order_q, retire_trace0.order);
+                assert (!retire_trace0.rd_wen || retire_trace0.rd_is_fp ||
+                        (retire_trace0.rd != '0))
+                    else $error("RETIRE: integer x0 write reported on lane0");
+            end
+
+            if (retire_trace1.valid) begin
+                assert (retire_trace1.order == (retire_trace0.order + 64'd1))
+                    else $error("RETIRE: lane1 order is not consecutive");
+                assert (retire_trace1.rob_tag != retire_trace0.rob_tag)
+                    else $error("RETIRE: two lanes reported the same ROB tag");
+                assert (!retire_trace1.rd_wen || retire_trace1.rd_is_fp ||
+                        (retire_trace1.rd != '0))
+                    else $error("RETIRE: integer x0 write reported on lane1");
+            end
+
+            assert_next_retire_order_q <= assert_next_retire_order_q +
+                                          64'(retire_trace0.valid ? 1 : 0) +
+                                          64'(retire_trace1.valid ? 1 : 0);
+        end
+    end
+`endif
+
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             software_irq_level_q <= 1'b0;
@@ -409,7 +621,10 @@ module top_packet_backend (
 
     assign branch_pending_q = |active_checkpoint_mask_q;
 
-    fetch_packet_stage u_fetch (
+    fetch_packet_stage #(
+        .DEPTH_BYTES(IMEM_DEPTH_BYTES),
+        .ENABLE_2WIDE(ENABLE_2WIDE)
+    ) u_fetch (
         .load_en(load_en),
         .load_addr(load_addr),
         .load_instr_byte(load_instr_byte),
@@ -452,6 +667,7 @@ module top_packet_backend (
         .in_if(pipe_dr_pkt_s.consumer),
         .out_if(pipe_rd_pkt.producer),
         .retire_valid({retire_valid1, retire_valid}),
+        .retire_is_fp(retire_is_fp),
         .retire_preg0(retire_preg),
         .retire_preg1(retire_preg1)
     );
@@ -470,7 +686,9 @@ module top_packet_backend (
         .out_if(pipe_rd_pkt_d.producer)
     );
 
-    dispatch_packet_stage u_dispatch_packet (
+    dispatch_packet_stage #(
+        .ENABLE_2WIDE(ENABLE_2WIDE)
+    ) u_dispatch_packet (
         .flush(1'b0),
         .squash_en(recover_rat_exe),
         .squash_checkpoint_id(resolve_checkpoint_id_exe),
@@ -478,29 +696,37 @@ module top_packet_backend (
         .resolve_checkpoint_id(resolve_checkpoint_id_exe),
         .lane0_src1_ready(lane0_src1_ready),
         .lane0_src2_ready(lane0_src2_ready),
+        .lane0_src3_ready(lane0_src3_ready),
         .lane0_src1_value(lane0_src1_value),
         .lane0_src2_value(lane0_src2_value),
+        .lane0_src3_value(lane0_src3_value),
         .lane1_src1_ready(lane1_src1_ready),
         .lane1_src2_ready(lane1_src2_ready),
+        .lane1_src3_ready(lane1_src3_ready),
         .lane1_src1_value(lane1_src1_value),
         .lane1_src2_value(lane1_src2_value),
+        .lane1_src3_value(lane1_src3_value),
         .wb_valid(wb_valid),
+        .wb_is_fp(wb_is_fp),
         .wb_preg(wb_preg),
         .wb_tag(wb_tag),
         .wb_result(wb_result),
         .wb1_valid(wb1_valid),
+        .wb1_is_fp(wb1_is_fp),
         .wb1_preg(wb1_preg),
         .wb1_tag(wb1_tag),
         .wb1_result(wb1_result),
         .complete_valid(complete_valid),
         .complete_tag(complete_tag),
         .complete_result(complete_result),
+        .complete_fp_flags(complete_fp_flags),
         .branch_complete_valid(branch_complete_valid),
         .branch_complete_tag(branch_complete_tag),
         .branch_complete_result(branch_complete_result),
         .lane1_complete_valid(lane1_complete_valid),
         .lane1_complete_tag(lane1_complete_tag),
         .lane1_complete_result(lane1_complete_result),
+        .lane1_complete_fp_flags(lane1_complete_fp_flags),
         .commit_en0(commit_en),
         .commit_en1(commit_en1),
         .in_if(pipe_rd_pkt_d.consumer),
@@ -520,28 +746,67 @@ module top_packet_backend (
     assign lane1_dispatch_fire = pipe_rd_pkt_d.valid && pipe_rd_pkt_d.ready &&
                                  pipe_rd_pkt_d.data.lane1.valid;
 
+    assign lane0_src1_ready =
+        pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.src1_is_fp ?
+        fp_lane0_src1_ready : int_lane0_src1_ready;
+    assign lane0_src2_ready =
+        pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.src2_is_fp ?
+        fp_lane0_src2_ready : int_lane0_src2_ready;
+    assign lane0_src3_ready =
+        !pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.src3_is_fp ||
+        fp_lane0_src3_ready;
+    assign lane1_src1_ready =
+        pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.src1_is_fp ?
+        fp_lane1_src1_ready : int_lane1_src1_ready;
+    assign lane1_src2_ready =
+        pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.src2_is_fp ?
+        fp_lane1_src2_ready : int_lane1_src2_ready;
+    assign lane1_src3_ready =
+        !pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.src3_is_fp ||
+        fp_lane1_src3_ready;
+    assign lane0_src1_value =
+        pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.src1_is_fp ?
+        fp_lane0_src1_value : int_lane0_src1_value;
+    assign lane0_src2_value =
+        pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.src2_is_fp ?
+        fp_lane0_src2_value : int_lane0_src2_value;
+    assign lane0_src3_value =
+        pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.src3_is_fp ?
+        fp_lane0_src3_value : '0;
+    assign lane1_src1_value =
+        pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.src1_is_fp ?
+        fp_lane1_src1_value : int_lane1_src1_value;
+    assign lane1_src2_value =
+        pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.src2_is_fp ?
+        fp_lane1_src2_value : int_lane1_src2_value;
+    assign lane1_src3_value =
+        pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.src3_is_fp ?
+        fp_lane1_src3_value : '0;
+
     reg_file_2w u_prf_2w (
         .clk(clk),
         .rst_n(rst_n),
-        .w_en(wb_valid),
+        .w_en(wb_valid && !wb_is_fp),
         .w_addr(wb_preg),
         .w_data(wb_result),
-        .w1_en(wb1_valid),
+        .w1_en(wb1_valid && !wb1_is_fp),
         .w1_addr(wb1_preg),
         .w1_data(wb1_result),
         .lane0_raddr0(pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.src_reg_1p),
-        .lane0_rdata0(lane0_src1_value),
+        .lane0_rdata0(int_lane0_src1_value),
         .lane0_raddr1(pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.src_reg_2p),
-        .lane0_rdata1(lane0_src2_value),
+        .lane0_rdata1(int_lane0_src2_value),
         .lane1_raddr0(pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.src_reg_1p),
-        .lane1_rdata0(lane1_src1_value),
+        .lane1_rdata0(int_lane1_src1_value),
         .lane1_raddr1(pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.src_reg_2p),
-        .lane1_rdata1(lane1_src2_value),
+        .lane1_rdata1(int_lane1_src2_value),
         .rename_en({
             lane1_dispatch_fire &&
-            pipe_rd_pkt_d.data.lane1.data.rs_entry.control_signal.rename,
+            pipe_rd_pkt_d.data.lane1.data.rs_entry.control_signal.rename &&
+            !pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.dest_is_fp,
             lane0_dispatch_fire &&
-            pipe_rd_pkt_d.data.lane0.data.rs_entry.control_signal.rename
+            pipe_rd_pkt_d.data.lane0.data.rs_entry.control_signal.rename &&
+            !pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.dest_is_fp
         }),
         .lane0_src1_valid_addr(pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.src_reg_1p),
         .lane0_src2_valid_addr(pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.src_reg_2p),
@@ -549,13 +814,88 @@ module top_packet_backend (
         .lane1_src1_valid_addr(pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.src_reg_1p),
         .lane1_src2_valid_addr(pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.src_reg_2p),
         .lane1_new_des_preg(pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.new_des_preg),
-        .lane0_src1_ready(lane0_src1_ready),
-        .lane0_src2_ready(lane0_src2_ready),
-        .lane1_src1_ready(lane1_src1_ready),
-        .lane1_src2_ready(lane1_src2_ready)
+        .lane0_src1_ready(int_lane0_src1_ready),
+        .lane0_src2_ready(int_lane0_src2_ready),
+        .lane1_src1_ready(int_lane1_src1_ready),
+        .lane1_src2_ready(int_lane1_src2_ready)
     );
 
-    execution_stage u_execution (
+    fp_reg_file_2w u_fp_prf_2w (
+        .clk(clk),
+        .rst_n(rst_n),
+        .wb0_en(wb_valid && wb_is_fp),
+        .wb0_addr(fp_defines_pkg::fp_preg_t'(wb_preg)),
+        .wb0_data(wb_result),
+        .wb1_en(wb1_valid && wb1_is_fp),
+        .wb1_addr(fp_defines_pkg::fp_preg_t'(wb1_preg)),
+        .wb1_data(wb1_result),
+        .lane0_raddr0(fp_defines_pkg::fp_preg_t'(
+            pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.src_reg_1p)),
+        .lane0_rdata0(fp_lane0_src1_value),
+        .lane0_raddr1(fp_defines_pkg::fp_preg_t'(
+            pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.src_reg_2p)),
+        .lane0_rdata1(fp_lane0_src2_value),
+        .lane0_raddr2(fp_defines_pkg::fp_preg_t'(
+            pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.src_reg_3p)),
+        .lane0_rdata2(fp_lane0_src3_value),
+        .lane1_raddr0(fp_defines_pkg::fp_preg_t'(
+            pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.src_reg_1p)),
+        .lane1_rdata0(fp_lane1_src1_value),
+        .lane1_raddr1(fp_defines_pkg::fp_preg_t'(
+            pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.src_reg_2p)),
+        .lane1_rdata1(fp_lane1_src2_value),
+        .lane1_raddr2(fp_defines_pkg::fp_preg_t'(
+            pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.src_reg_3p)),
+        .lane1_rdata2(fp_lane1_src3_value),
+        .rename_en({
+            lane1_dispatch_fire &&
+            pipe_rd_pkt_d.data.lane1.data.rs_entry.control_signal.rename &&
+            pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.dest_is_fp,
+            lane0_dispatch_fire &&
+            pipe_rd_pkt_d.data.lane0.data.rs_entry.control_signal.rename &&
+            pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.dest_is_fp
+        }),
+        .lane0_src1_addr(fp_defines_pkg::fp_preg_t'(
+            pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.src_reg_1p)),
+        .lane0_src2_addr(fp_defines_pkg::fp_preg_t'(
+            pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.src_reg_2p)),
+        .lane0_src3_addr(fp_defines_pkg::fp_preg_t'(
+            pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.src_reg_3p)),
+        .lane0_new_preg(fp_defines_pkg::fp_preg_t'(
+            pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.new_des_preg)),
+        .lane1_src1_addr(fp_defines_pkg::fp_preg_t'(
+            pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.src_reg_1p)),
+        .lane1_src2_addr(fp_defines_pkg::fp_preg_t'(
+            pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.src_reg_2p)),
+        .lane1_src3_addr(fp_defines_pkg::fp_preg_t'(
+            pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.src_reg_3p)),
+        .lane1_new_preg(fp_defines_pkg::fp_preg_t'(
+            pipe_rd_pkt_d.data.lane1.data.rs_entry.datapath.new_des_preg)),
+        .lane0_src1_ready(fp_lane0_src1_ready),
+        .lane0_src2_ready(fp_lane0_src2_ready),
+        .lane0_src3_ready(fp_lane0_src3_ready),
+        .lane1_src1_ready(fp_lane1_src1_ready),
+        .lane1_src2_ready(fp_lane1_src2_ready),
+        .lane1_src3_ready(fp_lane1_src3_ready)
+    );
+
+    fp_csr u_fp_csr (
+        .clk        (clk),
+        .rst_n      (rst_n),
+        .csr_we     (fp_csr_write_en),
+        .csr_addr   (fp_csr_write_addr),
+        .csr_wdata  (fp_csr_write_data),
+        .flags_valid(fp_commit_flags_valid),
+        .flags      (fp_commit_flags),
+        .csr_rdata  (fp_csr_rdata),
+        .fflags     (fp_fflags),
+        .frm        (fp_frm),
+        .fcsr       (fp_fcsr)
+    );
+
+    execution_stage #(
+        .MEM_WORDS(DMEM_WORDS)
+    ) u_execution (
         .in_if(issue_if.consumer),
         .in1_if(issue1_if.consumer),
         .software_irq_pending(software_irq_pending_q),
@@ -564,23 +904,34 @@ module top_packet_backend (
         .interrupt_take(interrupt_take),
         .interrupt_mepc(interrupt_mepc),
         .interrupt_mcause(interrupt_mcause),
+        .fp_frm_value(fp_frm),
+        .fp_csr_rdata(fp_csr_rdata),
+        .fp_state_dirty(fp_state_dirty_commit),
+        .commit_store_valid0(commit_store_valid0),
+        .commit_store_tag0(rob_head.datapath.rob_tag),
+        .commit_store_valid1(commit_store_valid1),
+        .commit_store_tag1(rob_head1.datapath.rob_tag),
         .wb_valid(wb_valid),
+        .wb_is_fp(wb_is_fp),
         .wb_preg(wb_preg),
         .wb_tag(wb_tag),
         .wb_result(wb_result),
         .wb1_valid(wb1_valid),
+        .wb1_is_fp(wb1_is_fp),
         .wb1_preg(wb1_preg),
         .wb1_tag(wb1_tag),
         .wb1_result(wb1_result),
         .complete_valid(complete_valid),
         .complete_tag(complete_tag),
         .complete_result(complete_result),
+        .complete_fp_flags(complete_fp_flags),
         .branch_complete_valid(branch_complete_valid),
         .branch_complete_tag(branch_complete_tag),
         .branch_complete_result(branch_complete_result),
         .lane1_complete_valid(lane1_complete_valid),
         .lane1_complete_tag(lane1_complete_tag),
         .lane1_complete_result(lane1_complete_result),
+        .lane1_complete_fp_flags(lane1_complete_fp_flags),
         .resolve_checkpoint_id(resolve_checkpoint_id_exe),
         .bp_update_valid(bp_update_valid_exe),
         .bp_update_pc(bp_update_pc_exe),
@@ -592,6 +943,9 @@ module top_packet_backend (
         .recover_rat(recover_rat_exe),
         .csr_mstatus_value(csr_mstatus_value),
         .csr_mie_value(csr_mie_value),
+        .fp_csr_write_en(fp_csr_write_en),
+        .fp_csr_write_addr(fp_csr_write_addr),
+        .fp_csr_write_data(fp_csr_write_data),
         .branch_resolve(branch_resolve_exe)
     );
 

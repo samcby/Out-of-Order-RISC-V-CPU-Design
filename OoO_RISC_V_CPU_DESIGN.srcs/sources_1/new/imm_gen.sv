@@ -22,11 +22,13 @@ module imm_gen #(
         unique case (op_code)
             7'b0010011, // OP-IMM
             7'b0000011, // LOAD
+            7'b0000111, // LOAD-FP
             7'b1100111, // JALR
             7'b1110011: // SYSTEM/CSR
                 imm = imm_i;
 
-            7'b0100011: // STORE
+            7'b0100011, // STORE
+            7'b0100111: // STORE-FP
                 imm = imm_s;
 
             7'b1100011: // BRANCH

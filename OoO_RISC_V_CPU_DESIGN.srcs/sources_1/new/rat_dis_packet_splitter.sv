@@ -54,11 +54,16 @@ module rat_dis_packet_splitter (
                         in_if.data.lane1.data.rs_entry.control_signal.alu_control_signal.sys_en);
 
     assign alu_pair_raw_dep = lane0_alu && lane1_alu &&
-                              (in_if.data.lane0.data.rs_entry.datapath.new_des_preg != '0) &&
-                              ((in_if.data.lane1.data.rs_entry.datapath.src_reg_1p ==
-                                in_if.data.lane0.data.rs_entry.datapath.new_des_preg) ||
-                               (in_if.data.lane1.data.rs_entry.datapath.src_reg_2p ==
-                                in_if.data.lane0.data.rs_entry.datapath.new_des_preg));
+                              (in_if.data.lane0.data.rs_entry.datapath.dest_is_fp ||
+                               (in_if.data.lane0.data.rs_entry.datapath.new_des_preg != '0)) &&
+                              (((in_if.data.lane1.data.rs_entry.datapath.src1_is_fp ==
+                                 in_if.data.lane0.data.rs_entry.datapath.dest_is_fp) &&
+                                (in_if.data.lane1.data.rs_entry.datapath.src_reg_1p ==
+                                 in_if.data.lane0.data.rs_entry.datapath.new_des_preg)) ||
+                               ((in_if.data.lane1.data.rs_entry.datapath.src2_is_fp ==
+                                 in_if.data.lane0.data.rs_entry.datapath.dest_is_fp) &&
+                                (in_if.data.lane1.data.rs_entry.datapath.src_reg_2p ==
+                                 in_if.data.lane0.data.rs_entry.datapath.new_des_preg)));
 
     assign alu_pair_speculative = lane0_alu && lane1_alu &&
                                   ((in_if.data.lane0.data.rs_entry.datapath.speculation_mask != '0) ||
