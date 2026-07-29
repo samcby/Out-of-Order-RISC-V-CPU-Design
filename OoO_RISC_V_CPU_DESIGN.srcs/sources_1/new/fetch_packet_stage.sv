@@ -1,3 +1,15 @@
+// Active two-wide frontend for the packet backend.
+//
+// The stage selects a fetch PC, reads two adjacent 32-bit instructions from an
+// internal instruction RAM, attaches prediction metadata, and emits one
+// ordered packet. Lane 0 is at fetch_pc and lane 1 is at fetch_pc + 4. A
+// predicted-taken lane-0 control-flow instruction suppresses the sequential
+// lane 1 because that instruction is no longer on the predicted path.
+//
+// Redirect priority is architectural recovery/trap first, prediction second,
+// and sequential advancement last. BHT, BTB, and JALR-target-cache state is
+// trained by resolved branches from execution. Output data remains stable
+// under downstream backpressure according to the pip_if contract.
 module fetch_packet_stage #(
     parameter int WIDTH = 32,
     parameter int DEPTH_BYTES = 4096,
@@ -243,6 +255,20 @@ module fetch_packet_stage #(
     assign jalr_miss_fire = fetch_fire &&
                             (((lane0_opcode == 7'b1100111) && !jalr_hit) ||
                              (lane1_valid && lane1_is_jalr && !lane1_jalr_hit));
+
+ /*  上面的内容主要是：
+ 取到 lane0、lane1
+│
+├─ lane0 是 control？
+│  ├─ 是：只输出 lane0，并采用 lane0 的预测
+│  └─ 否
+│      ├─ lane1 是 control？
+│      │  ├─ 是：输出两条，并采用 lane1 的预测
+│      │  └─ 否：顺序取两条
+│
+└─ 当前 packet 只有在 valid && ready 后才真正推进 PC
+ */
+
 
     always_ff @(posedge out_if.clk or negedge out_if.rst_n) begin
         if (!out_if.rst_n) begin

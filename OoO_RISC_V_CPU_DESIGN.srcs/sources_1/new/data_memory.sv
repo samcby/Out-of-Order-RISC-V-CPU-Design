@@ -1,3 +1,9 @@
+// Backing word-addressed memory model behind the data cache.
+//
+// Accepts one read or masked-write request at a time, optionally delays its
+// response by RESPONSE_LATENCY cycles, and returns the pre-write word on a
+// write acknowledgement. The model is deliberately simple and deterministic;
+// cache behavior, ordering, and speculation are handled by data_cache and LSU.
 module data_memory #(
     parameter int MEM_WORDS = 256,
     parameter int RESPONSE_LATENCY = 1
@@ -26,6 +32,8 @@ module data_memory #(
     logic [3:0] pending_wmask_q;
     logic [WIDTH-1:0] pending_wdata_q;
 
+    // This model accepts at most one request. busy_q includes the artificial
+    // latency interval, so a caller cannot overwrite pending address/data.
     assign req_ready = !busy_q;
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -45,6 +53,8 @@ module data_memory #(
             resp_valid <= 1'b0;
             resp_rdata <= '0;
 
+            // A delayed response performs the masked write (if any) only when
+            // the transaction completes, then releases the single request slot.
             if (busy_q) begin
                 if (latency_q == '0) begin
                     resp_valid <= 1'b1;

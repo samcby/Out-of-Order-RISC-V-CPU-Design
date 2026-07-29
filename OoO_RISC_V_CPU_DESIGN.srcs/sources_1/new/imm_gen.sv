@@ -1,3 +1,9 @@
+// RISC-V immediate extractor and sign extender.
+//
+// Reassembles the non-contiguous instruction fields for I, S, B, U, and J
+// formats into a WIDTH-bit two's-complement value. Branch and jump immediates
+// include their architecturally implied low zero bit. The module is purely
+// combinational and has no validity state of its own.
 module imm_gen #(
     parameter int WIDTH = 32
 )(

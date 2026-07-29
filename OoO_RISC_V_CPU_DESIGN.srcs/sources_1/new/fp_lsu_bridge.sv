@@ -1,5 +1,11 @@
 `timescale 1ns / 1ps
 
+// Adapter between decoded FP load/store intent and the integer-address LSU.
+//
+// FP memory operations still use an integer base address and immediate, but a
+// load result must be written to the FP PRF and a store source comes from the
+// FP register namespace. This bridge repackages those domain details without
+// changing byte addressing, masks, or memory ordering semantics.
 module fp_lsu_bridge #(
     parameter int MEM_WORDS = 256,
     parameter int DATA_CACHE_LINES = 8,

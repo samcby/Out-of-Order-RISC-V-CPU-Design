@@ -1,3 +1,13 @@
+// Two-wide speculative integer register-alias table.
+//
+// Four source lookups serve two instructions while two destination mappings
+// may be installed atomically. Lane 1 observes lane 0's new mapping when the
+// packet contains a RAW or WAW relationship, preserving program order within
+// the packet. x0 is permanently mapped to p0 and is never renamed.
+//
+// Checkpoints hold complete RAT snapshots. Correct branch resolution releases
+// a checkpoint; misprediction restore replaces the speculative map with the
+// selected snapshot before refetch begins.
 module reg_alias_table_2w (
     input  logic clk,
     input  logic rst_n,

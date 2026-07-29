@@ -1,5 +1,15 @@
 `timescale 1ns / 1ps
 
+// Two-slot issue arbiter for the packet backend.
+//
+// Arbitrates ready candidates from the ALU/FP RS, branch RS, and memory-order
+// queue into ordered execution slots. It prefers legal useful pairings such as
+// ALU+ALU, ALU+memory, or branch+ALU while respecting single shared resources.
+// CSR/system work is constrained to slot 0 so it cannot race with a peer side
+// effect. Slot 1 valid is meaningful only when slot 0 also transfers.
+//
+// The arbiter is combinational: queue entries are removed only on the matching
+// valid && ready handshake at the execution-stage input.
 module issue_packet_arbiter #(
     parameter bit ENABLE_2WIDE = 1'b1
 )(

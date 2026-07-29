@@ -1,5 +1,11 @@
 `timescale 1ns/1ps
 
+// Simulation-only directed unit-level testbench for fetch packet stage.
+//
+// Generates a clock/reset and directed stimulus, then observes DUT outputs,
+// assertions, or explicit checks to validate the behavior named by this file.
+// Delays, initial blocks, tasks, $display, and $fatal are intentional testbench
+// constructs and must not be included in synthesizable hardware source lists.
 module tb_fetch_packet_stage;
 
     import defines_pkg::*;
@@ -37,6 +43,8 @@ module tb_fetch_packet_stage;
     initial clk = 1'b0;
     always #5 clk = ~clk;
 
+    // Advance whole cycles so checks observe registered packet/PC state after
+    // the same scheduling boundary used by the DUT.
     task automatic step_clk;
     begin
         @(posedge clk);
@@ -57,6 +65,8 @@ module tb_fetch_packet_stage;
     end
     endtask
 
+    // Program loader: instructions are deposited byte-wise into the Fetch RAM
+    // so the tests exercise the same little-endian storage view as normal code.
     task automatic write_byte;
         input [31:0] byte_addr;
         input [7:0]  data_byte;
@@ -79,6 +89,8 @@ module tb_fetch_packet_stage;
     end
     endtask
 
+    // Directed sequence covers sequential two-wide fetch, lane-0 control-flow
+    // suppression, prediction redirects, and backpressure/flush behavior.
     initial begin
         rst_n = 1'b0;
         load_en = 1'b0;

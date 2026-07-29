@@ -1,3 +1,9 @@
+// Legacy scalar rename stage.
+//
+// Resolves integer source mappings, allocates one destination physical register,
+// records the old mapping for eventual reclamation, and forwards the renamed
+// instruction to dispatch. This path predates packet checkpoints and FP rename;
+// the active design uses rename_packet_stage.
 module rename_stage (
     input  logic flush,
     input  logic restore_rat,

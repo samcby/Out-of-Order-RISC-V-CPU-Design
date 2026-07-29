@@ -1,3 +1,11 @@
+// Combinational decoder for one ordered packet lane.
+//
+// Extracts architectural register indices and instruction fields, invokes the
+// immediate generator and control decoder, and assembles the control/datapath
+// structures expected by rename. Source-valid information is format-aware so
+// later stages do not create false dependencies on unused instruction bits.
+// The lane contains no storage; packet-level valid/ready policy is handled by
+// decode_packet_stage and the surrounding skid buffers.
 module decode_lane #(
     parameter int WIDTH = 32
 )(
@@ -54,34 +62,34 @@ module decode_lane #(
         out_data.datapath.pred_target = in_data.pred_target;
 
         unique case (op_code)
-            7'b1000011,
-            7'b1000111,
-            7'b1001011,
-            7'b1001111: begin
+            7'b1000011, // FMADD
+            7'b1000111, // FMSUB
+            7'b1001011, // FNMSUB
+            7'b1001111: begin       // FNMADD
                 out_data.datapath.rs1 = in_data.instr[19:15];
                 out_data.datapath.rs2 = in_data.instr[24:20];
                 out_data.datapath.rs3 = in_data.instr[31:27];
             end
 
-            7'b0110011,
-            7'b1010011: begin
+            7'b0110011, // OP
+            7'b1010011: begin       // OP-FP
                 out_data.datapath.rs1 = in_data.instr[19:15];
                 out_data.datapath.rs2 = in_data.instr[24:20];
                 out_data.datapath.rs3 = '0;
             end
 
-            7'b0010011,
-            7'b0000011,
-            7'b0000111,
-            7'b1100111: begin
+            7'b0010011,     // OP-IMM
+            7'b0000011,     // LOAD
+            7'b0000111,     // LOAD-FP
+            7'b1100111: begin       // JALR
                 out_data.datapath.rs1 = in_data.instr[19:15];
                 out_data.datapath.rs2 = '0;
                 out_data.datapath.rs3 = '0;
             end
 
-            7'b0100011,
-            7'b0100111,
-            7'b1100011: begin
+            7'b0100011,     // STORE
+            7'b0100111,     // STORE-FP
+            7'b1100011: begin       // BRANCH
                 out_data.datapath.rs1 = in_data.instr[19:15];
                 out_data.datapath.rs2 = in_data.instr[24:20];
                 out_data.datapath.rs3 = '0;

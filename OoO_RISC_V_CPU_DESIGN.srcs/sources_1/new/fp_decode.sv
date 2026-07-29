@@ -1,5 +1,12 @@
 `timescale 1ns / 1ps
 
+// Decoder for the RV32F opcode space.
+//
+// Identifies floating-point sources/destinations, memory operations, fused
+// three-source operations, conversions, comparisons, moves, and rounding-mode
+// requirements. The result is a compact fp_decode_t description consumed by
+// the main decode controller. Invalid funct combinations are reported through
+// the `illegal` field rather than silently becoming a no-op.
 module fp_decode (
     input  logic [31:0]                 instr,
     output fp_defines_pkg::fp_decode_t  decoded

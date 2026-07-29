@@ -1,3 +1,16 @@
+// Central two-slot execution, writeback, recovery, and trap-control stage.
+//
+// Receives issue slots from the backend and routes them to dual scalar ALUs,
+// dual fixed-latency FP pipelines, one shared DIV/SQRT unit, the branch unit,
+// and the LSU. It arbitrates returned results onto two PRF writeback paths and
+// multiple ROB completion paths. A completed result may wake dependents before
+// its ROB entry retires; commit remains the sole ordering point for architectural
+// side effects.
+//
+// The stage also detects branch mispredictions, carries branch metadata through
+// a fixed resolve pipeline, issues selective checkpoint recovery/squash signals,
+// trains frontend predictors, and converts synchronous exceptions, interrupts,
+// and MRET into PC redirects plus CSR state updates.
 module execution_stage #(
     parameter int MEM_WORDS = 256
 )(
@@ -199,6 +212,9 @@ module execution_stage #(
                                         branch_actual_taken_now &&
                                         (branch_target[1:0] != 2'b00);
     assign branch_issue_now = branch_fu_fire && !branch_addr_misaligned_now;
+    // Classify FP work before assigning ready. Simple FP operations remain on
+    // the scalar ALU path; these candidates are the operations that must enter
+    // a fixed-latency FP pipe and therefore carry result metadata internally.
     assign issue0_fp_candidate =
         in_if.valid &&
         (in_if.data.fu_sel == FU_ALU) &&
@@ -449,6 +465,9 @@ module execution_stage #(
         end
     end
 
+    // The main completion/writeback port is shared. LSU response wins over the
+    // slot-0 FP pipe, which in turn wins over the long-latency DIV/SQRT unit.
+    // A losing producer observes !out_ready and retains its result safely.
     assign fp0_out_ready = !lsu_resp_valid;
     assign fp_long_select_lane1 =
         !issue0_fp_long_candidate && issue1_fp_long_candidate;
@@ -623,6 +642,9 @@ module execution_stage #(
         .link_result   (branch_link_result)
     );
 
+    // Register all externally visible results. Default-zero assignments below
+    // make completion/writeback signals one-cycle pulses; the ordered if/else
+    // chains implement the structural priority documented above.
     always_ff @(posedge in_if.clk or negedge in_if.rst_n) begin
         if (!in_if.rst_n) begin
             wb_valid  <= 1'b0;

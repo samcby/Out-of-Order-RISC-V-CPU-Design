@@ -1,3 +1,16 @@
+// Load/store unit with precise speculative-store handling.
+//
+// Loads occupy a pending slot, optionally obtain every requested byte through
+// store-to-load forwarding, or access the blocking data cache and then perform
+// RV32 sign/zero extension. Stores complete to the ROB after entering an
+// eight-entry store buffer, but cannot reach the cache/memory until the ROB
+// later supplies the matching commit tag. This separates execution completion
+// from architectural memory visibility.
+//
+// Store-buffer and pending-load entries retain speculation masks. Branch squash
+// removes wrong-path uncommitted stores and pending loads; correct resolve clears
+// a mask bit. The commit replay bookkeeping handles the corner case in which a
+// Store's ROB commit tag arrives in the same cycle as its buffer allocation.
 module lsu #(
     parameter int MEM_WORDS = 256,
     parameter int DATA_CACHE_LINES = 8,
@@ -163,6 +176,9 @@ module lsu #(
     assign pending_squashed =
         squash_en && pending_datapath.speculation_mask[squash_checkpoint_id];
 
+    // Scan the store buffer once per cycle to find allocation space, commit-tag
+    // matches, and the oldest committed store eligible to drain. Age ordering
+    // matters only after commit: speculative stores must remain private.
     always_comb begin
         store_buf_full = 1'b1;
         store_buf_any_valid = 1'b0;
@@ -242,6 +258,8 @@ module lsu #(
     assign pending_load_byte_mask =
         access_byte_mask(pending_control.funct3, pending_byte_off);
 
+    // Record every store-buffer entry that overlaps the newly accepted load.
+    // This dependency mask is later used for forwarding or conservative block.
     always_comb begin
         load_dep_mask_comb = '0;
         for (int i = 0; i < STORE_BUF_DEPTH; i++) begin
@@ -254,6 +272,10 @@ module lsu #(
         end
     end
 
+    // Build a forwarded word byte by byte. For each requested byte select the
+    // youngest matching older store, because it is the program-order value a
+    // load must observe. Partial coverage is deliberately not mixed with cache
+    // data; it blocks until the conflicting stores have drained.
     always_comb begin
         pending_forward_coverage = '0;
         pending_forward_word = '0;
@@ -286,6 +308,8 @@ module lsu #(
         end
     end
 
+    // A forwarded load completes without touching the cache only if every byte
+    // selected by the load mask is available from the store buffer.
     assign pending_forward_valid =
         pending_valid &&
         pending_control.mem_read &&
@@ -315,6 +339,9 @@ module lsu #(
     assign req_ready = control_signal.mem_write ?
                        (!pending_valid && !resp_valid && store_alloc_valid) :
                        (!pending_valid && !resp_valid);
+    // The cache sees either a non-forwarded pending load or the oldest committed
+    // store selected for drain. `pending_mem_req_sent` prevents duplicate cache
+    // requests while waiting for a variable-latency response.
     assign mem_req_valid =
         !mem_resp_valid &&
         ((pending_valid && !pending_store_blocking &&
@@ -412,6 +439,9 @@ module lsu #(
         end
     end
 
+    // State transitions: accept new LSU work, consume cache/forward responses,
+    // record commit tags that arrive early, and selectively kill wrong-path
+    // entries. Store visibility is gated exclusively by store_buf_committed.
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             pending_valid  <= 1'b0;

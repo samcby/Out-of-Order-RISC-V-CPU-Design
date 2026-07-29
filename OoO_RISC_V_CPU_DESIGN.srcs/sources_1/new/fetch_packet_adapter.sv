@@ -1,3 +1,8 @@
+// Compatibility adapter between a scalar fetch payload and packetized decode.
+//
+// The scalar input is placed in lane 0 and lane 1 is invalidated. No state or
+// reordering is introduced; ready/valid is propagated combinationally. This
+// adapter lets legacy single-wide components feed the newer packet pipeline.
 module fetch_packet_adapter (
     pip_if.consumer in_if,
     pip_if.producer out_if

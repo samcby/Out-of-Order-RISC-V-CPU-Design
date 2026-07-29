@@ -1,3 +1,11 @@
+// Low-latency scalar execution datapath used once per issue slot.
+//
+// Selects register or immediate operand two and implements RV32I arithmetic,
+// logical, comparison, shift, LUI, and AUIPC operations combinationally. When
+// fp_en is asserted, the integer case is bypassed and fp_simple_unit handles
+// bit-oriented/compare FP operations that do not require a multi-cycle FP
+// pipeline. Result retirement and PRF writeback are intentionally handled by
+// execution_stage rather than by this pure datapath module.
 module alu (
     input  defines_pkg::alu_control_t      control_signal,
     input  defines_pkg::rs_datapath_t      datapath,

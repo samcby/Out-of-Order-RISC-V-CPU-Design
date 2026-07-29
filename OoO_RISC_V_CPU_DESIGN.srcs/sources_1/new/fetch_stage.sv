@@ -1,3 +1,10 @@
+// Legacy single-wide fetch stage.
+//
+// Selects a sequential or redirected PC, reads one instruction, and transports
+// the result through a ready/valid interface. It is kept for compatibility
+// with top.sv; top_packet_backend uses fetch_packet_stage for two-wide fetch and
+// integrated branch prediction. Recovery/redirect must take precedence over
+// ordinary sequential advancement.
 module fetch_stage #(
     parameter int WIDTH = 32
 )(

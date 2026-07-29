@@ -1,5 +1,11 @@
 `timescale 1ns/1ps
 
+// Simulation-only integration-level packet-backend testbench for top packet backend 25test.
+//
+// Generates a clock/reset and directed stimulus, then observes DUT outputs,
+// assertions, or explicit checks to validate the behavior named by this file.
+// Delays, initial blocks, tasks, $display, and $fatal are intentional testbench
+// constructs and must not be included in synthesizable hardware source lists.
 module tb_top_packet_backend_25test;
 
     import defines_pkg::*;
@@ -159,6 +165,9 @@ module tb_top_packet_backend_25test;
         rob_head1_store_q       <= dut.rob_head1.control_signal.store;
     end
 
+    // Event counters provide a microarchitectural trace (issue, writeback,
+    // retire, and branch resolve) while retire-based checks validate the
+    // architectural state rather than assuming a fixed execution schedule.
     always @(negedge clk) begin
         if (rst_n && issue_valid_q) begin
             if (TRACE_VERBOSE) begin
@@ -232,6 +241,8 @@ module tb_top_packet_backend_25test;
         end
     end
 
+    // End-to-end mixed-instruction regression. The program is allowed to issue
+    // and complete out of order; final checks synchronize on retirement.
     initial begin
         rst_n = 1'b0;
         load_en = 1'b1;

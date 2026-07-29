@@ -1,5 +1,12 @@
 `timescale 1ns / 1ps
 
+// RV32F fused multiply-add family numerical core.
+//
+// Evaluates FMADD, FMSUB, FNMSUB, and FNMADD using three FP source operands.
+// The multiply product and addend are aligned before one final normalization and
+// rounding step, preserving fused-operation semantics instead of rounding an
+// intermediate multiply. NaN/Inf/zero interactions and fflags are resolved in
+// this core; pipeline timing is supplied by fp_execution_pipeline.
 module fp_fma_unit (
     input  logic [4:0]  operation,
     input  logic [2:0]  rounding_mode,

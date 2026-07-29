@@ -1,3 +1,14 @@
+// Two-wide integer physical-register allocator with checkpoint recovery.
+//
+// The free bitmap covers physical registers not currently owned by an active
+// architectural/speculative mapping. Up to two lowest-index registers are
+// proposed combinationally and removed atomically only when pop_commit fires.
+// Up to two old mappings may be returned by retirement in the same cycle.
+//
+// Branch checkpoints snapshot the allocation state. A misprediction restores
+// the selected snapshot while preserving architecturally retired reclamations,
+// preventing wrong-path allocations from leaking physical registers. Integer
+// p0 and the initial x0-x31 mappings are never offered as new allocations.
 module free_pool_2w (
     input  logic clk,
     input  logic rst_n,

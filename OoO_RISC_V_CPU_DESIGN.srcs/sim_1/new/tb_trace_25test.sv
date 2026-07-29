@@ -1,5 +1,11 @@
 `timescale 1ns/1ps
 
+// Simulation-only retirement-trace testbench for trace 25test.
+//
+// Generates a clock/reset and directed stimulus, then observes DUT outputs,
+// assertions, or explicit checks to validate the behavior named by this file.
+// Delays, initial blocks, tasks, $display, and $fatal are intentional testbench
+// constructs and must not be included in synthesizable hardware source lists.
 module tb_trace_25test;
 
     import defines_pkg::*;
@@ -145,6 +151,8 @@ module tb_trace_25test;
         bp_update_target_q      <= dut.bp_update_target_exe;
     end
 
+    // Capture execution events for diagnosis, but use the retire trace as the
+    // authoritative architectural order when comparing expected program state.
     always @(negedge clk) begin
         if (rst_n && issue_valid_q) begin
             if (TRACE_VERBOSE) begin
@@ -203,6 +211,8 @@ module tb_trace_25test;
         end
     end
 
+    // The directed program validates that trace order remains sequential even
+    // when issue/writeback timing differs because of OoO scheduling.
     initial begin
         rst_n = 1'b0;
         load_en = 1'b1;

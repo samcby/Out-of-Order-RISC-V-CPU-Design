@@ -1,5 +1,11 @@
 `timescale 1ns/1ps
 
+// Simulation-only top-level integration testbench for top phase6 multi checkpoint.
+//
+// Generates a clock/reset and directed stimulus, then observes DUT outputs,
+// assertions, or explicit checks to validate the behavior named by this file.
+// Delays, initial blocks, tasks, $display, and $fatal are intentional testbench
+// constructs and must not be included in synthesizable hardware source lists.
 module tb_top_phase6_multi_checkpoint;
 
     import defines_pkg::*;

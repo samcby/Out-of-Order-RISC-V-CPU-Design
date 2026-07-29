@@ -1,5 +1,15 @@
 `timescale 1ns / 1ps
 
+// Eight-entry, two-enqueue/two-issue reservation station for ALU/FP/CSR work.
+//
+// Each entry records source values and ready bits at dispatch. Two writeback
+// broadcasts and same-cycle enqueue bypass can independently satisfy sources.
+// An age counter assigned at enqueue selects the oldest ready entries, allowing
+// safe out-of-order execution without violating the ordering policy expected by
+// CSR-sensitive dispatch.
+//
+// Entries carry a speculation mask. Mispredict squash removes younger work;
+// correct branch resolution clears the resolved checkpoint bit in survivors.
 module rs_2issue #(
     parameter type T = defines_pkg::alu_rs_t
 )(

@@ -1,5 +1,12 @@
 `timescale 1ns / 1ps
 
+// Two-wide speculative floating-point register-alias table.
+//
+// Provides three source mappings per lane for fused multiply-add operations and
+// accepts up to two destination updates. Same-packet forwarding makes lane 1
+// observe lane 0's rename before its own source/destination decisions. Complete
+// map snapshots support branch checkpoint restore. Unlike integer x0, f0 is
+// writable and participates in ordinary mapping updates.
 module fp_rat_2w #(
     parameter int CHECKPOINT_NUM = 4,
     parameter int CHECKPOINT_W   = $clog2(CHECKPOINT_NUM)

@@ -1,3 +1,9 @@
+// Legacy scalar dispatch classifier.
+//
+// Chooses the destination issue queue for one renamed instruction and checks
+// whether that queue and the ROB can accept it. New packet-based dispatch uses
+// dispatch_packet_logic, which performs equivalent decisions atomically for
+// two lanes and reads physical-register readiness.
 module dispatch_logic (
     pip_if.consumer in_if,
 

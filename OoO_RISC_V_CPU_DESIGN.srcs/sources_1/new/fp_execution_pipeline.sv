@@ -1,5 +1,13 @@
 `timescale 1ns / 1ps
 
+// Fixed-latency, throughput-one floating-point execution pipeline.
+//
+// A combinational numerical front end selects add/sub, multiply, conversion, or
+// FMA results, then packages the result with ROB/physical-register/speculation
+// metadata through LATENCY register stages. Two instances are used by execution
+// for the two issue slots. Backpressure freezes the entire pipe so no output is
+// lost; branch squash removes wrong-path entries and resolve clears checkpoint
+// bits in surviving entries.
 module fp_execution_pipeline #(
     parameter int LATENCY = 3
 ) (
@@ -94,6 +102,8 @@ module fp_execution_pipeline #(
         .flags        (fma_flags)
     );
 
+    // All numerical subunits evaluate from the incoming operands in parallel;
+    // fp_op selects one candidate before it is captured into stage 0.
     always_comb begin
         unique case (in_control.fp_op)
             FP_OP_MUL: begin
@@ -121,6 +131,9 @@ module fp_execution_pipeline #(
         endcase
     end
 
+    // Speculation state travels with the result rather than being inferred from
+    // the current frontend state, which lets an old correct-path FP operation
+    // survive while younger work is selectively discarded.
     assign input_squashed =
         squash_en && in_datapath.speculation_mask[squash_checkpoint_id];
     assign output_squashed =
@@ -137,6 +150,9 @@ module fp_execution_pipeline #(
     assign out_result = entry_q[LATENCY-1].result;
     assign out_flags = entry_q[LATENCY-1].flags;
 
+    // When the output is blocked, freeze every stage to preserve ordering and
+    // metadata. Squash still takes effect while stalled so a wrong-path result
+    // cannot emerge merely because the consumer is backpressuring the pipe.
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n || flush) begin
             for (int stage_idx = 0; stage_idx < LATENCY; stage_idx++) begin

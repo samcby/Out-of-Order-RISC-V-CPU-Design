@@ -1,3 +1,9 @@
+// Legacy sequential program-counter register.
+//
+// This small module belongs to the original single-wide frontend. It updates
+// the PC on an enabled clock edge and supports an externally selected next PC.
+// The active packet backend performs richer predicted/recovery PC selection in
+// fetch_packet_stage instead, but the module is retained for the legacy top.
 module pc_counter #(
     parameter int WIDTH = 32
 )(

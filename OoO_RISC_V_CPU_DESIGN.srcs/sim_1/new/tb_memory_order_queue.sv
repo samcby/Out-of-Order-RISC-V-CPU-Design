@@ -1,5 +1,11 @@
 `timescale 1ns/1ps
 
+// Simulation-only directed unit-level testbench for memory order queue.
+//
+// Generates a clock/reset and directed stimulus, then observes DUT outputs,
+// assertions, or explicit checks to validate the behavior named by this file.
+// Delays, initial blocks, tasks, $display, and $fatal are intentional testbench
+// constructs and must not be included in synthesizable hardware source lists.
 module tb_memory_order_queue;
 
     import defines_pkg::*;
