@@ -1,5 +1,12 @@
 `timescale 1ns / 1ps
 
+// Floating-point CSR bank: fflags, frm, and the combined fcsr view.
+//
+// Software CSR writes update the selected field, while committed FP exception
+// flags are ORed into fflags so speculative/wrong-path exceptions are invisible.
+// The current rounding mode is exported to execution; instructions with rm=111
+// use this dynamic frm value. This block is kept separate from csr_file because
+// the latter owns machine-mode control/trap state.
 module fp_csr (
     input  logic        clk,
     input  logic        rst_n,

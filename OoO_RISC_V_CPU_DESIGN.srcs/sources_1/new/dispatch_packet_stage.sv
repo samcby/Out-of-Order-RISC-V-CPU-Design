@@ -1,5 +1,16 @@
 `timescale 1ns / 1ps
 
+// Stateful two-wide dispatch coordinator.
+//
+// Wraps dispatch_packet_logic with the ROB, ALU/FP reservation station, branch
+// reservation station, memory-order queue, and issue arbiter. Its ready signal
+// represents an atomic promise: once a packet transfers, all required entries
+// are allocated in the same cycle, so no instruction can exist in a queue
+// without a matching ROB entry.
+//
+// Writeback broadcasts update queue readiness, while branch recovery squashes
+// younger entries using their speculation masks. CSR-pending tracking limits
+// side-effecting CSR/system instructions to a safe serialized path.
 module dispatch_packet_stage #(
     parameter bit ENABLE_2WIDE = 1'b1
 )(

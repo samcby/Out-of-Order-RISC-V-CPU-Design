@@ -1,5 +1,11 @@
 `timescale 1ns / 1ps
 
+// IEEE-754 single-precision multiply numerical core.
+//
+// Multiplies normalized significands, adds unbiased exponents, normalizes and
+// rounds with guard/round/sticky information, then applies IEEE special-value
+// rules for NaN, infinity, zero, overflow, and underflow. It is a combinational
+// operand/result block; surrounding FP pipeline registers define timing.
 module fp_mul_unit (
     input  logic [2:0]  rounding_mode,
     input  logic [31:0] operand_a,

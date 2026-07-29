@@ -1,5 +1,12 @@
 `timescale 1ns / 1ps
 
+// Two-wide floating-point physical-register allocator.
+//
+// Functionally mirrors the integer free pool but uses the independent FP
+// register namespace. f0 is an ordinary writable architectural register, so
+// physical register zero is not treated as a hard-wired constant. Allocation,
+// retirement reclamation, checkpoint save, resolve, and restore are all kept
+// coherent with the FP RAT.
 module fp_free_pool_2w #(
     parameter int CHECKPOINT_NUM = 4,
     parameter int CHECKPOINT_W   = $clog2(CHECKPOINT_NUM)

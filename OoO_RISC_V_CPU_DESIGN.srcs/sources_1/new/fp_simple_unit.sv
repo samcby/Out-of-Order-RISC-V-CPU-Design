@@ -1,5 +1,12 @@
 `timescale 1ns / 1ps
 
+// Combinational RV32F helper for operations without full FP arithmetic.
+//
+// Implements sign injection, min/max, comparisons, classification, and raw-bit
+// moves. It explicitly recognizes NaNs, signaling NaNs, signed zeros, infinities,
+// normals, and subnormals to implement IEEE-754-visible corner cases and flags.
+// ADD/SUB/MUL/CVT/FMA instead use fp_execution_pipeline; DIV/SQRT use the long
+// latency unit.
 module fp_simple_unit (
     input  logic [4:0]  operation,
     input  logic [31:0] operand_a,

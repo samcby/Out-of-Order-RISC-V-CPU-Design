@@ -1,5 +1,17 @@
-// Primary integration top for the current packetized 2-wide backend.
-// The legacy scalar-oriented integration remains available as top.sv.
+// Primary integration top for the current packetized two-wide OoO backend.
+//
+// This is the architectural wiring diagram expressed as RTL: it connects the
+// predicted frontend, decode/rename skid stages, packet splitter, dispatch and
+// issue queues, global integer/FP PRFs, execution resources, ROB, and commit
+// side effects. Instructions may execute and write physical registers out of
+// order, but commit signals derived from the ROB head make Store visibility,
+// physical-register reclamation, FP flags, and retire traces strictly ordered.
+//
+// Recovery signals originate in execution and flow backward to Fetch, Rename,
+// queues, and storage structures. `flush_exe` clears front-end transport state;
+// checkpoint restore recovers RAT/free-pool state; selective squash removes only
+// younger speculative work. The legacy scalar-oriented integration remains in
+// top.sv.
 module top_packet_backend #(
     parameter bit ENABLE_2WIDE = 1'b1,
     parameter int IMEM_DEPTH_BYTES = 4096,

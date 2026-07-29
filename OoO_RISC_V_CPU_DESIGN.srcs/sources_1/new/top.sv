@@ -1,8 +1,12 @@
 `timescale 1ns / 1ps
 
 // Legacy scalar-oriented integration top.
-// New development should target top_packet_backend.sv unless explicitly
-// validating backward compatibility with the original scalar path.
+//
+// Connects the original fetch/decode/rename/dispatch/ROB implementation with
+// scalar execution resources. It is retained as a compact compatibility and
+// regression configuration. New development should target top_packet_backend,
+// whose packet interfaces, dual-width resources, FP state, and recovery paths
+// implement the current architecture.
 module top (
     input  logic clk,
     input  logic rst_n,
@@ -431,4 +435,3 @@ module top (
     assign rob_head_rd   = rob_head.datapath.rd;
 
 endmodule
-

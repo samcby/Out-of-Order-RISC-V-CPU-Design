@@ -1,3 +1,8 @@
+// Legacy scalar decode wrapper.
+//
+// Decodes one fetched instruction for the original single-wide pipeline. The
+// active backend uses decode_packet_stage, which instantiates one decode_lane
+// per packet lane. This module remains synthesizable for top.sv compatibility.
 module decode_stage #(
     parameter int WIDTH = 32
 )(

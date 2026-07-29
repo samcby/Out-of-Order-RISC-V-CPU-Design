@@ -1,3 +1,14 @@
+// Active 16-entry two-wide reorder buffer.
+//
+// Dispatch allocates up to two consecutive tail entries per cycle. Execution
+// may complete entries in any order through tag-matched completion ports, but
+// retirement is strictly from head and optionally its immediate successor. The
+// ROB is thus the ordering point for physical-register reclamation, store
+// visibility, FP exception flags, and architectural retire traces.
+//
+// Every entry retains speculation metadata. Branch recovery invalidates only
+// younger entries whose mask contains the failed checkpoint; a correct resolve
+// clears that bit in surviving entries. Full flush discards all in-flight work.
 module rob_2w (
     pip_if.consumer rob_packet_if,
 
@@ -39,12 +50,14 @@ module rob_2w (
     typedef logic [ROB_IDX_W-1:0] rob_idx_t;
     typedef logic [ROB_COUNT_W-1:0] rob_count_t;
 
+    // 环形 ROB 存储体：entries 保存飞行指令的提交信息；valid_bits
+    // 使 commit/squash 后遗留的数组内容对外不可见。
     rob_t entries [0:ROB_DEPTH-1];
     logic valid_bits [0:ROB_DEPTH-1];
 
-    rob_idx_t head_q;
-    rob_idx_t tail_q;
-    rob_count_t count_q;
+    rob_idx_t head_q;       //当前最老、下一条可能 commit 的 entry
+    rob_idx_t tail_q;       //下一条新指令应写入的位置
+    rob_count_t count_q;    //当前在飞行的有效 ROB entry 数量
 
     logic lane0_req;
     logic lane1_req;
@@ -96,11 +109,15 @@ module rob_2w (
     assign full  = (count_q == rob_count_t'(ROB_DEPTH));
     assign rob_packet_if.ready = (free_slots >= rob_count_t'(push_req_count));
 
+    // Dispatch packet 原子接收；每个有效 lane 消耗一个连续 tail 槽位，
+    // 因而同一拍可分配 0、1 或 2 个 ROB entry。
     assign push_fire  = rob_packet_if.valid && rob_packet_if.ready;
     assign push_fire0 = push_fire && rob_packet_if.data.lane0.valid;
     assign push_fire1 = push_fire && rob_packet_if.data.lane1.valid;
     assign push_fire_count = {1'b0, push_fire0} + {1'b0, push_fire1};
     assign head_idx1 = (head_q == ROB_DEPTH-1) ? '0 : (head_q + 1'b1);
+    // 提交严格按序：lane1 只有在 lane0 同拍成功提交、且紧随其后的
+    // 第二个 entry 也完成时才允许提交。
     assign pop_fire0 = commit_en0 && head_valid && head_complete;
     assign pop_fire1 = pop_fire0 && commit_en1 && head1_valid && head1_complete;
     assign pop_fire_count = {1'b0, pop_fire0} + {1'b0, pop_fire1};
@@ -116,6 +133,8 @@ module rob_2w (
         head_next = next_head_idx[ROB_IDX_W-1:0];
     end
 
+    // 向 commit 逻辑暴露最老的两条。执行完成可以乱序，但只有 head
+    // 及其紧邻后继可以改变架构可见状态。
     always_comb begin
         head_valid    = !empty;
         head_entry    = '0;
@@ -136,6 +155,8 @@ module rob_2w (
         end
     end
 
+    // 计算本 packet 的环形 tail 写入位置。lane1-only packet 合法，
+    // 因为 lane0 未消耗槽位时 lane1 直接使用 tail_q。
     always_comb begin
         int idx0;
         int idx1;
@@ -157,6 +178,8 @@ module rob_2w (
         tail_next = next_idx[ROB_IDX_W-1:0];
     end
 
+    // completion port 携带逻辑 ROB tag，而非 entries[] 的物理 index。
+    // 扫描所有 live entry，使 tag 在环形队列回绕后仍能定位动态指令。
     always_comb begin
         complete_hit0 = 1'b0;
         complete_idx0 = '0;
@@ -180,6 +203,8 @@ module rob_2w (
         end
     end
 
+    // 分支错预测时，仅保留不依赖失败 checkpoint 的 entry；本拍已提交
+    // 的 head/head1 也视为不再存活。survivor 用于重建 tail/count。
     always_comb begin
         survive_count = '0;
         tail_after_squash = head_after_pop;
@@ -211,6 +236,7 @@ module rob_2w (
 
     always_ff @(posedge rob_packet_if.clk or negedge rob_packet_if.rst_n) begin
         if (!rob_packet_if.rst_n || flush) begin
+            // 全 flush（如 trap/interrupt 恢复）：丢弃所有飞行指令。
             head_q <= '0;
             tail_q <= '0;
             count_q <= '0;
@@ -219,6 +245,7 @@ module rob_2w (
                 valid_bits[i] <= 1'b0;
             end
         end else begin
+            // 1) 将新 dispatch 的 instruction 写入 tail。
             if (push_fire0) begin
                 entries[tail_idx0] <= rob_packet_if.data.lane0.data.rob_entry;
                 valid_bits[tail_idx0] <= 1'b1;
@@ -231,6 +258,8 @@ module rob_2w (
                 tail_q <= tail_next;
             end
 
+            // 2) 任意年龄的指令均可按 tag 回报完成；这里只置 complete
+            // 并保存结果，绝不因此改变提交顺序。
             if (complete_en0 && complete_hit0) begin
                 entries[complete_idx0].datapath.complete <= 1'b1;
                 entries[complete_idx0].datapath.result <= complete_result0;
@@ -250,6 +279,7 @@ module rob_2w (
                     known_flags(complete_fp_flags2);
             end
 
+            // 3) branch 预测正确：所有仍在飞行的指令不再依赖该 checkpoint。
             if (resolve_en) begin
                 for (int i = 0; i < ROB_DEPTH; i++) begin
                     if (valid_bits[i]) begin
@@ -259,6 +289,8 @@ module rob_2w (
             end
 
             if (squash_en) begin
+                // 4a) 错预测恢复：仅使 speculation mask 包含该 checkpoint
+                // 的年轻错误路径 entry 失效。
                 for (int i = 0; i < ROB_DEPTH; i++) begin
                     valid_bits[i] <= survive_vec[i];
                 end
@@ -266,6 +298,7 @@ module rob_2w (
                 tail_q <= tail_after_squash;
                 count_q <= survive_count;
             end else begin
+                // 4b) 正常路径：只按程序顺序从 head 弹出一或两条完成指令。
                 if (pop_fire0) begin
                     valid_bits[head_q] <= 1'b0;
                     if (pop_fire1) begin

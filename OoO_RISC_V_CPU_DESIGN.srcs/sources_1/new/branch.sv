@@ -1,3 +1,10 @@
+// Combinational branch, jump, and link-address calculator.
+//
+// Evaluates signed/unsigned branch predicates from funct3, computes PC-relative
+// branch/JAL targets, and clears bit zero for JALR targets as required by the
+// RISC-V ISA. The unit reports the architectural outcome only; prediction
+// comparison, delayed resolve, checkpoint recovery, and predictor training are
+// centralized in execution_stage.
 module branch_unit (
     input  defines_pkg::branch_control_t   control_signal,
     input  defines_pkg::rs_datapath_t      datapath,

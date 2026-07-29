@@ -1,3 +1,9 @@
+// One-entry elastic buffer for a ready/valid channel.
+//
+// The buffer captures an item when the downstream blocks after the upstream
+// has presented valid data. It breaks a long combinational ready path without
+// changing transaction order. `flush` discards the buffered transaction,
+// which is required when a redirect invalidates younger pipeline work.
 module skid_buffer #(
     parameter type T = logic [31:0]
 )(

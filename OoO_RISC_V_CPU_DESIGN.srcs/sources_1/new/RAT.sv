@@ -1,3 +1,9 @@
+// Legacy single-wide integer register-alias table (RAT).
+//
+// Maps each architectural register to the physical register containing its
+// newest speculative value. Source lookups are combinational; a successful
+// rename updates the destination mapping on the clock edge. The active packet
+// backend uses reg_alias_table_2w for lane bypass and branch checkpoints.
 module reg_alias_table (
     input  logic clk,
     input  logic rst_n,

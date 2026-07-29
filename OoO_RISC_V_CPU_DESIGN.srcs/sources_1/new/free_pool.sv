@@ -1,3 +1,9 @@
+// Legacy single-allocation integer physical-register free pool.
+//
+// Maintains a bitmap of allocatable physical registers. Rename removes one
+// register on a successful allocation; commit returns the previous mapping.
+// Register p0 and the initial architectural mappings are reserved. The active
+// packet backend uses free_pool_2w for atomic two-lane allocation and recovery.
 module free_pool (
     input  logic clk,
     input  logic rst_n,

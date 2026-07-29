@@ -1,29 +1,45 @@
 `timescale 1ns / 1ps
 
+
+// The package in systemverilog 是全工程共享的命名空间，其他模块只需要“import defines_pkg::*;”就可以使用里面的参数和类型定义了。
+
+// Central type and constant package for the complete processor.
+//
+// Keep architectural widths, operation encodings, and inter-stage payloads in
+// this package so that all pipeline stages agree on the exact bit layout. The
+// packed structures declared here are transported through pip_if interfaces,
+// stored in queues/ROB entries, and copied into recovery checkpoints. Adding a
+// field therefore changes a hardware interface even when no module port list
+// changes explicitly.
+//
+// Naming convention used by the packet backend:
+//   *_control_t  - decoded operation controls; no dynamic operand values.
+//   *_datapath_t - PC, instruction, tags, physical-register IDs, and values.
+//   *_packet_t   - two ordered lanes; lane 0 is always older than lane 1.
 package defines_pkg;
 
-    parameter int WIDTH = 32;
+    parameter int WIDTH = 32;   // RV32 的数据宽度、地址宽度
 
-    parameter int AREG_NUM = 32;
+    parameter int AREG_NUM = 32;    // 架构整数寄存器数量：x0–x31
     parameter int AREG_W   = $clog2(AREG_NUM);
 
-    parameter int PREG_NUM = 128;
+    parameter int PREG_NUM = 128;   // 用于重命名的物理寄存器数量
     parameter int PREG_W   = $clog2(PREG_NUM);
 
     parameter int ICACHE_BYTES = 4096;
     parameter int ICACHE_WORDS = ICACHE_BYTES / 4;
 
-    parameter int ROB_DEPTH = 16;
+    parameter int ROB_DEPTH = 16;     // 最多允许 16 条指令在 ROB 中等待提交
     // ROB depth and ROB completion tag width serve different purposes:
     // depth sizes the queue, while the tag must stay unique long enough to
     // avoid aliasing against older in-flight entries. A wider tag keeps
     // completion routing stable across longer traces with loops.
     parameter int ROB_TAG_W = 8;
 
-    parameter int RS_DEPTH = 8;
-    parameter int CHECKPOINT_NUM = 4;
+    parameter int RS_DEPTH = 8;     // 单个保留站的默认容量
+    parameter int CHECKPOINT_NUM = 4;   // 同时跟踪4个未解决的分支
     parameter int CHECKPOINT_W   = $clog2(CHECKPOINT_NUM);
-    parameter int ISSUE_WIDTH = 2;
+    parameter int ISSUE_WIDTH = 2;      // 每个时钟周期最多发射两条指令
 
     parameter logic [3:0] ALU_ADD  = 4'd0;
     parameter logic [3:0] ALU_SUB  = 4'd1;

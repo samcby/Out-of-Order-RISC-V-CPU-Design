@@ -1,3 +1,9 @@
+// Parameterized in-order circular FIFO used by legacy pipeline components.
+//
+// Head and tail pointers wrap independently while a count distinguishes full
+// from empty. Push and pop may occur together without changing occupancy. The
+// caller must obey the advertised full/empty conditions; this module does not
+// perform speculative recovery or associative tag lookup like the ROB.
 module circular_buffer #(
     parameter type T = logic [31:0],
     parameter int DEPTH = 8,

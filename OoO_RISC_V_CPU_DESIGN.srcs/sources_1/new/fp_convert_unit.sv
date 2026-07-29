@@ -1,5 +1,12 @@
 `timescale 1ns / 1ps
 
+// RV32F integer/float conversion numerical core.
+//
+// Supports signed and unsigned 32-bit integer conversions in both directions.
+// It performs exponent/significand decode, rounding-mode handling, saturation
+// or invalid-result selection for out-of-range inputs, and IEEE exception flag
+// production. The destination register domain is selected by decode metadata,
+// not by the 32-bit bit pattern produced here.
 module fp_convert_unit (
     input  logic [4:0]  operation,
     input  logic [2:0]  rounding_mode,

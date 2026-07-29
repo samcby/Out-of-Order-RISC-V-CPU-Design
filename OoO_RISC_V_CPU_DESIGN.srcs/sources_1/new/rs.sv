@@ -1,5 +1,16 @@
 `timescale 1ns / 1ps
 
+// Generic single-issue reservation station, used by the branch path.
+//
+// Entries retain renamed source physical-register IDs, captured values, ready
+// bits, ROB tag, and speculation metadata. Writeback broadcasts can wake an
+// entry after dispatch, and the selected ready entry is held until the consumer
+// completes a valid/ready transfer. This implementation gives the lowest ready
+// entry index priority; it is therefore a compact functional queue rather than
+// a fully age-ordered scheduler.
+//
+// `squash_en` removes entries younger than a mispredicted checkpoint; a correct
+// resolve clears only the corresponding speculation bit.
 module rs #(
     parameter type T = defines_pkg::alu_rs_t,
     parameter logic [1:0] OPERATION = defines_pkg::FU_ALU,

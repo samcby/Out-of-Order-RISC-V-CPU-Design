@@ -1,3 +1,13 @@
+// Machine-mode CSR storage and trap-return state machine.
+//
+// Implements the subset needed by this core: mstatus, mie, mtvec, mepc,
+// mcause, mtval, mip, and a constant mhartid. CSR reads are combinational;
+// CSRRW/CSRRS/CSRRC writes occur on the clock edge. Trap entry records fault
+// context and updates MIE/MPIE/MPP, while MRET restores interrupt state.
+//
+// Hardware interrupt inputs continuously drive the relevant mip bits. The FP
+// path reports fp_state_dirty at commit so mstatus.FS/SD become architecturally
+// dirty only for retired floating-point state changes.
 module csr_file (
     input  logic                          clk,
     input  logic                          rst_n,
@@ -46,6 +56,9 @@ module csr_file (
     logic [WIDTH-1:0] write_value;
     logic [WIDTH-1:0] mstatus_visible;
 
+    // SD is a derived architectural summary bit: expose it whenever the FP
+    // state field is Dirty even if software attempted to write an inconsistent
+    // stored SD value.
     always_comb begin
         mstatus_visible = mstatus_q;
         mstatus_visible[MSTATUS_SD_BIT] =
@@ -57,6 +70,8 @@ module csr_file (
     assign mtvec_value   = mtvec_q;
     assign mepc_value    = mepc_q;
 
+    // CSR reads are combinational so a CSR instruction can write its old value
+    // to the integer PRF on the same execution path that updates the CSR state.
     always_comb begin
         unique case (csr_addr)
             CSR_MSTATUS: csr_rdata = mstatus_visible;
@@ -71,6 +86,8 @@ module csr_file (
         endcase
     end
 
+    // Compute the requested read-modify-write value before the sequential block;
+    // CSRRS/CSRRC source-zero suppression is performed by execution_stage.
     always_comb begin
         unique case (csr_op)
             CSR_RW:  write_value = csr_wdata;
@@ -109,6 +126,8 @@ module csr_file (
                 endcase
             end
 
+            // Trap entry has later assignments than an ordinary CSR write and
+            // therefore wins for the architecturally sensitive status fields.
             if (trap_en) begin
                 mepc_q   <= trap_mepc;
                 mcause_q <= trap_mcause;

@@ -1,5 +1,12 @@
 `timescale 1ns / 1ps
 
+// RV32F-specific architectural constants and decode metadata.
+//
+// Floating-point architectural and physical register namespaces are distinct
+// from their integer counterparts even though both values are 32 bits wide.
+// FP_OP_* values identify the numerical operation after instruction decoding;
+// they are consumed by the simple FP unit, fixed-latency FP pipelines, the
+// iterative divide/square-root unit, and the LSU bridge.
 package fp_defines_pkg;
 
     parameter int FP_AREG_NUM = 32;

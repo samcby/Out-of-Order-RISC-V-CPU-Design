@@ -1,3 +1,8 @@
+// Compatibility adapter exposing lane 0 of a decoded two-wide packet.
+//
+// Used by legacy single-wide backend logic. Lane 1 is intentionally ignored,
+// so this module must not be inserted in a path that promises true two-wide
+// retirement. The adapter is combinational and preserves ready/valid timing.
 module decode_packet_lane0_adapter (
     input logic flush,
     pip_if.consumer in_if,

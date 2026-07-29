@@ -1,3 +1,15 @@
+// Multiported integer physical register file for the two-wide backend.
+//
+// Stores 128 speculative integer values and one ready bit per physical
+// register. Four combinational read ports supply two sources for each dispatch
+// lane. Two writeback ports may complete in the same cycle; same-cycle bypass
+// returns the newest write directly to readers and gives port 1 deterministic
+// priority on an accidental same-address collision.
+//
+// Rename invalidates a newly allocated destination's ready bit. Execution
+// writeback installs its value and wakes dependent queue entries. Architectural
+// x0 correctness is enforced by rename/allocation policy rather than by silently
+// discarding arbitrary writes inside this storage module.
 module reg_file_2w (
     input  logic clk,
     input  logic rst_n,

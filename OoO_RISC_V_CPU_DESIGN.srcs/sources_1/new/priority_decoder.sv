@@ -1,3 +1,9 @@
+// Lowest-index priority encoder.
+//
+// `in` is a request bitmap. `valid` is the reduction-OR of that bitmap and
+// `out` identifies the first asserted bit, with index zero having the highest
+// priority. Queue modules use this block to select a free entry; age-based
+// instruction issue is implemented separately and must not rely on index order.
 module priority_decoder #(
     parameter int WIDTH = 8
 )(

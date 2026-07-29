@@ -1,3 +1,14 @@
+// Packet firewall between rename and dispatch.
+//
+// Rename can create two ordered instructions in one cycle, but not every pair
+// can safely consume the downstream resources together. This module detects
+// incompatible combinations (for example competing memory/branch resources,
+// CSR serialization, and selected same-packet dependencies) and sends lane 0
+// first while retaining lane 1 in a one-entry pending register. It preserves
+// program order and never duplicates a lane across the two output transfers.
+//
+// `flush` discards a pending younger lane. This boundary is deliberately after
+// rename: a split changes dispatch timing, not the RAT allocation already made.
 module rat_dis_packet_splitter (
     input logic flush,
     pip_if.consumer in_if,

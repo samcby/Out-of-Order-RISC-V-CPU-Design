@@ -1,3 +1,8 @@
+// Legacy scalar dispatch stage.
+//
+// Drives the original scalar ROB/reservation-station interfaces and stalls
+// rename when the selected backend structure is full. It remains for top.sv;
+// top_packet_backend routes packetized instructions through dispatch_packet_stage.
 module dispatch_stage (
     input  logic                           src1_ready,
     input  logic                           src2_ready,

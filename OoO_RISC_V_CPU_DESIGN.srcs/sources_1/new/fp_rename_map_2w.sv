@@ -1,5 +1,12 @@
 `timescale 1ns / 1ps
 
+// Integrated two-wide FP rename helper.
+//
+// Couples fp_rat_2w source/destination mapping with fp_free_pool_2w allocation
+// so a packet either receives all required FP resources or does not rename.
+// It returns old mappings for later ROB retirement, new mappings for execution,
+// and checkpoint metadata for speculative recovery. Three FP source operands
+// per lane are supported for FMA-family instructions.
 module fp_rename_map_2w #(
     parameter int CHECKPOINT_NUM = 4,
     parameter int CHECKPOINT_W   = $clog2(CHECKPOINT_NUM)

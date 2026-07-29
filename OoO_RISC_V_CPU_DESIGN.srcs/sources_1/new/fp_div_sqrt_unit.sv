@@ -1,5 +1,12 @@
 `timescale 1ns / 1ps
 
+// Numerical core for single-precision floating-point divide and square root.
+//
+// Unpacks/normalizes operands, computes quotient or integer square-root
+// significands, forms sticky information, applies the requested rounding mode,
+// and handles all key IEEE special cases. The core is combinational in this
+// educational implementation; fp_div_sqrt_iterative models the long occupied
+// latency and provides the externally visible busy/handshake behavior.
 module fp_div_sqrt_unit (
     input  logic [4:0]  operation,
     input  logic [2:0]  rounding_mode,

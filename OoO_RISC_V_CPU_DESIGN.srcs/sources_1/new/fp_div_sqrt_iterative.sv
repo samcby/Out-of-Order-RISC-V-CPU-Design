@@ -1,5 +1,12 @@
 `timescale 1ns / 1ps
 
+// Single shared long-latency FP divide/square-root functional unit.
+//
+// Captures one operation and its ROB/preg/speculation metadata, then holds the
+// resource busy for DIV_LATENCY or SQRT_LATENCY cycles before exposing a result.
+// Only one FDIV/FSQRT may be outstanding in this unit. The numerical result is
+// computed by fp_div_sqrt_unit at acceptance time; the counter models iterative
+// occupancy for scheduling purposes. Squash cancels wrong-path work immediately.
 module fp_div_sqrt_iterative #(
     parameter int DIV_LATENCY = 16,
     parameter int SQRT_LATENCY = 24
@@ -66,6 +73,9 @@ module fp_div_sqrt_iterative #(
         squash_en && in_datapath.speculation_mask[squash_checkpoint_id];
     assign entry_squashed =
         squash_en && entry_q.speculation_mask[squash_checkpoint_id];
+    // `busy` represents functional-unit occupancy, not merely an unconsumed
+    // result. A new long operation may replace a consumed result only after the
+    // countdown has finished and the output handshake permits it.
     assign busy = (cycles_left_q != 0);
     assign in_ready = !busy && (!out_valid_q || out_ready);
     assign out_valid = out_valid_q && !entry_squashed;
@@ -76,6 +86,9 @@ module fp_div_sqrt_iterative #(
     assign out_result = entry_q.result;
     assign out_flags = entry_q.flags;
 
+    // Capture numerical output once at acceptance, then count cycles. Keeping
+    // tag/preg/speculation metadata in entry_q makes cancellation independent
+    // of whatever operands are presented by later issue attempts.
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n || flush) begin
             entry_q <= '0;

@@ -1,3 +1,8 @@
+// Legacy scalar issue arbiter.
+//
+// Chooses one ready reservation-station request and forwards it to the legacy
+// execution interface. The packet backend uses issue_packet_arbiter to build
+// two ordered issue slots and to enforce shared-function-unit constraints.
 module issue_arbiter (
     pip_if.consumer alu_if,
     pip_if.consumer lsu_if,

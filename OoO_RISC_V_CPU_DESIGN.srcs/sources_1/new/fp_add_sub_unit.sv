@@ -1,5 +1,12 @@
 `timescale 1ns / 1ps
 
+// IEEE-754 single-precision add/subtract numerical core.
+//
+// Unpacks operands, orders magnitudes, aligns the smaller significand with a
+// sticky bit, performs add/subtract, normalizes, rounds according to rm, and
+// handles NaN/Inf/zero/subnormal special cases. The output flags use the RISC-V
+// fflags ordering NV,DZ,OF,UF,NX. This core is combinational; fp_execution_pipeline
+// supplies the externally visible fixed latency and speculative metadata.
 module fp_add_sub_unit (
     input  logic        subtract,
     input  logic [2:0]  rounding_mode,

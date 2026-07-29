@@ -1,5 +1,12 @@
 `timescale 1ns / 1ps
 
+// Multiported floating-point physical register file.
+//
+// Six combinational reads provide three operands for each of two lanes, which
+// is required by fused multiply-add instructions. Two independent writeback
+// ports update value/ready state and provide same-cycle bypass. The FP physical
+// namespace is separate from the integer PRF, and physical register zero is a
+// normal writable location because RISC-V f0 is not hard-wired to zero.
 module fp_reg_file_2w (
     input  logic clk,
     input  logic rst_n,

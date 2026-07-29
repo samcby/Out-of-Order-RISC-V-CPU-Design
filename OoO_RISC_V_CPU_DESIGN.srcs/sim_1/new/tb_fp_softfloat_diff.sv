@@ -1,5 +1,11 @@
 `timescale 1ns / 1ps
 
+// Simulation-only floating-point datapath/control testbench for fp softfloat diff.
+//
+// Generates a clock/reset and directed stimulus, then observes DUT outputs,
+// assertions, or explicit checks to validate the behavior named by this file.
+// Delays, initial blocks, tasks, $display, and $fatal are intentional testbench
+// constructs and must not be included in synthesizable hardware source lists.
 module tb_fp_softfloat_diff;
     import fp_defines_pkg::*;
 

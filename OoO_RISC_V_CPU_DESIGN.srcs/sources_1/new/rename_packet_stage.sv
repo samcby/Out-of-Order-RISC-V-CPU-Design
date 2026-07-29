@@ -1,3 +1,16 @@
+// Active two-wide rename stage for integer and floating-point instructions.
+//
+// Source architectural registers are translated through the integer/FP RATs;
+// every valid destination receives a new physical register while the old
+// mapping is saved in the ROB payload for commit-time reclamation. Resource
+// checks are packet-atomic: no lane changes rename state unless every required
+// physical register, ROB slot, and checkpoint is available.
+//
+// Lane 0 is older and its new mapping is bypassed into lane 1 for same-packet
+// RAW/WAW cases. Control-flow instructions allocate one of four checkpoints and
+// attach a speculation mask to younger work. Branch resolve releases a mask bit;
+// misprediction restores both RAT and free-pool state. Retirement returns old
+// integer or FP mappings but never rolls back completed architectural history.
 module rename_packet_stage (
     input  logic flush,
     input  logic restore_rat,

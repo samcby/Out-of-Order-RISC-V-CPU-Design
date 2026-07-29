@@ -1,5 +1,16 @@
 `timescale 1ns / 1ps
 
+// Main RV32I/RV32F instruction-control decoder.
+//
+// Converts opcode/funct fields into orthogonal controls for the ALU, branch
+// unit, LSU, CSR/system path, and floating-point units. Defaults describe a
+// side-effect-free operation; every legal instruction explicitly enables only
+// the resources it needs. Unsupported or malformed encodings are marked as
+// illegal so execution can raise a precise illegal-instruction trap.
+//
+// This module does not read registers or calculate immediates. It describes
+// instruction intent; decode_lane combines that intent with extracted fields
+// and imm_gen output to build the dynamic pipeline payload.
 module decode_controller (
     input  logic [31:0] instr,
     input  logic [6:0] op_code,
@@ -121,7 +132,7 @@ module decode_controller (
         src1_is_fp = 1'b0;
         src2_is_fp = 1'b0;
         src3_is_fp = 1'b0;
-        dest_is_fp = 1'b0;
+        dest_is_fp = 1'b0;      //默认：不写寄存器、不访问内存、不跳转、不分配物理寄存器、不派发给执行单元。
 
         unique case (op_code)
             7'b1000011,

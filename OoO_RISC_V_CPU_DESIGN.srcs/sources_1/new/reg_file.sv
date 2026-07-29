@@ -1,3 +1,9 @@
+// Legacy scalar physical register file with readiness tracking.
+//
+// Rename clears the ready bit of a newly allocated destination; execution
+// writeback stores the value and sets ready. Combinational read ports expose
+// both the current value and dependency status. The packet backend uses the
+// multiported reg_file_2w implementation.
 module reg_file (
     input  logic clk,
     input  logic rst_n,

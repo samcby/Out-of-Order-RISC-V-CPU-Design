@@ -1,3 +1,9 @@
+// Simple instruction-memory model used by the legacy fetch path.
+//
+// Storage is word-addressed and initialized/loaded by the surrounding design
+// or testbench. This is not a tagged cache: it provides deterministic local
+// instruction storage without miss/refill behavior. The current packet fetch
+// stage contains its own dual-read instruction RAM for two-wide operation.
 module icache #(
     parameter int WIDTH = 32,
     parameter int DEPTH_BYTES = 4096

@@ -1,5 +1,11 @@
 `timescale 1ns/1ps
 
+// Simulation-only directed unit-level testbench for lsu commit store.
+//
+// Generates a clock/reset and directed stimulus, then observes DUT outputs,
+// assertions, or explicit checks to validate the behavior named by this file.
+// Delays, initial blocks, tasks, $display, and $fatal are intentional testbench
+// constructs and must not be included in synthesizable hardware source lists.
 module tb_lsu_commit_store;
 
     import defines_pkg::*;
@@ -79,6 +85,9 @@ module tb_lsu_commit_store;
     end
     endtask
 
+    // Store helpers intentionally separate execution from commit. They verify
+    // that an accepted store completes to the ROB before it may change cache or
+    // backing memory, which is the precise-state contract of the LSU.
     task automatic issue_store(
         input rob_tag_t tag,
         input logic [WIDTH-1:0] addr,
@@ -163,6 +172,8 @@ module tb_lsu_commit_store;
     end
     endtask
 
+    // Load helpers observe both forwarded values and cache-visible values after
+    // conflicting stores become committed and drain from the Store Buffer.
     task automatic issue_load(input rob_tag_t tag, input preg_t preg, input logic [WIDTH-1:0] addr);
     begin
         control_signal = '0;
@@ -212,6 +223,8 @@ module tb_lsu_commit_store;
     end
     endtask
 
+    // The scenario also covers commit-tag replay, byte-mask stores, forwarding,
+    // and the guarantee that wrong-path/uncommitted stores cannot reach memory.
     initial begin
         rst_n = 1'b0;
         req_valid = 1'b0;

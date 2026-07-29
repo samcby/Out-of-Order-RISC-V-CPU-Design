@@ -1,3 +1,11 @@
+// Blocking set-associative write-back, write-allocate data cache.
+//
+// The default configuration is two ways, eight total lines, and four words per
+// line. A hit completes directly from the tag/data arrays. On a miss, the cache
+// chooses an invalid or replacement way, writes a dirty victim back word by
+// word if needed, refills the requested line from data_memory, then completes
+// the original load or merged store. Only one miss transaction is active, so
+// req_ready is asserted exclusively in the idle state.
 module data_cache #(
     parameter int MEM_WORDS = 256,
     parameter int LINE_COUNT = 8,
@@ -25,6 +33,9 @@ module data_cache #(
     localparam int TAG_W = ADDR_W - INDEX_W - OFFSET_W;
     localparam int WAY_W = (WAY_COUNT <= 1) ? 1 : $clog2(WAY_COUNT);
 
+    // A blocking miss is decomposed into request/wait pairs because data_memory
+    // has a ready/valid response interface. line_word_q walks every word of a
+    // victim/refill line; no independent request may enter during these states.
     typedef enum logic [2:0] {
         DCACHE_IDLE,
         DCACHE_WRITEBACK_REQ,
@@ -77,6 +88,8 @@ module data_cache #(
     assign req_offset = req_word_addr[OFFSET_W-1:0];
     assign req_index = req_word_addr[OFFSET_W +: INDEX_W];
     assign req_tag = req_word_addr[ADDR_W-1:OFFSET_W+INDEX_W];
+    // One outstanding cache transaction is supported. Holding req_ready low on
+    // a miss prevents LSU from losing the saved request/victim metadata.
     assign req_ready = (state_q == DCACHE_IDLE);
 
     assign mem_req_valid = ((state_q == DCACHE_WRITEBACK_REQ) ||
@@ -175,6 +188,9 @@ module data_cache #(
             resp_valid <= 1'b0;
             resp_rdata <= '0;
 
+            // Hit handling, dirty-victim writeback, and line refill are kept in
+            // one state machine so the original request is replayed exactly once
+            // after a miss has reconstructed the target cache line.
             unique case (state_q)
                 DCACHE_IDLE: begin
                     refill_started_q <= 1'b0;

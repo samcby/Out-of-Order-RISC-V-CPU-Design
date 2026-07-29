@@ -1,3 +1,9 @@
+// Stateless two-lane decode wrapper for the active packet pipeline.
+//
+// Each valid input lane is decoded independently, while lane ordering and the
+// outer packet handshake are preserved. Because there is no internal queue,
+// output backpressure propagates directly to the input. Flush behavior is
+// provided by the registered skid buffers on either side of this module.
 module decode_packet_stage #(
     parameter int WIDTH = 32
 )(

@@ -1,5 +1,15 @@
 `timescale 1ns / 1ps
 
+// Conservative memory-order queue for renamed Load and Store instructions.
+//
+// The queue tracks source readiness and age, then exposes only its oldest ready
+// memory operation to the LSU. This intentionally limits memory-level
+// speculation: address disambiguation and store-to-load forwarding happen in
+// the LSU, while the MOQ keeps issue order simple and deterministic. A small
+// registered head stage decouples queue selection from the LSU handshake.
+//
+// Like other backend queues, entries wake on PRF writeback and are selectively
+// removed/updated by branch checkpoint squash and resolve events.
 module memory_order_queue #(
     parameter int DEPTH = defines_pkg::RS_DEPTH
 )(

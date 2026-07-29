@@ -1,3 +1,14 @@
+// Combinational resource and routing logic for a renamed two-lane packet.
+//
+// It classifies each lane by functional-unit class, reads source values/ready
+// bits from the integer and FP PRFs, creates ROB allocation payloads, and
+// prepares enqueue payloads for the ALU/FP RS, branch RS, and memory-order
+// queue. Both lanes are accepted atomically only when every targeted queue,
+// ROB capacity, and pairwise issue restriction is satisfied.
+//
+// Dispatch is the boundary at which a logical physical-register dependency
+// becomes a concrete value/ready dependency. A source that is not ready remains
+// in its queue entry until a later writeback wakeup supplies the value.
 module dispatch_packet_logic (
     pip_if.consumer in_if,
 
@@ -197,3 +208,17 @@ module dispatch_packet_logic (
     assign branch_if.data.src3_ready = 1'b1;
 
 endmodule
+
+
+/*
+一个 packet 若要通过，
+必须保证：
+ROB 有位置
++ 每条指令的目标等待队列有位置
++ 同包组合合法
++ CSR 精确性不被破坏
+
+通过后：
+RS 获得“物理 source tag + ready/value”
+ROB 获得“程序顺序 entry”
+*/

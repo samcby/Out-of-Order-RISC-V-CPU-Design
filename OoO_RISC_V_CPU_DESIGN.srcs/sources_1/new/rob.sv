@@ -1,3 +1,9 @@
+// Legacy scalar reorder buffer.
+//
+// Holds renamed instructions in program order, accepts out-of-order completion
+// by tag, and exposes only the oldest completed entry for commit. This module
+// predates dual allocation/completion and is used by the legacy top-level.
+// The active packet backend uses rob_2w.
 module rob (
     pip_if.consumer rob_if_in,
 
