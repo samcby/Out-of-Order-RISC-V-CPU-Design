@@ -79,6 +79,7 @@ module tb_rename_dispatch_packet_smoke;
     );
 
     dispatch_packet_stage u_dispatch_packet_stage (
+        .halt(1'b0),
         .lane0_src1_ready(lane0_src1_ready),
         .lane0_src2_ready(lane0_src2_ready),
         .lane0_src1_value(lane0_src1_value),

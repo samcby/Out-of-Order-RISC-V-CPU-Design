@@ -28,6 +28,7 @@ module free_pool_2w (
     input  logic [defines_pkg::CHECKPOINT_W-1:0] checkpoint_id_save,
     input  logic restore_en,
     input  logic [defines_pkg::CHECKPOINT_W-1:0] restore_checkpoint_id,
+    input  logic architectural_restore,
 
     output logic full,
     output logic empty,
@@ -150,7 +151,12 @@ module free_pool_2w (
                 end
             end
         end else begin
-            if (restore_en) begin
+            if (architectural_restore === 1'b1) begin
+                for (int i = 0; i < PREG_NUM; i++) begin
+                    free_bitmap_q[i] <= (i >= AREG_NUM) &&
+                                        !(mapped_bitmap[i] === 1'b1);
+                end
+            end else if (restore_en) begin
                 free_bitmap_q <= checkpoints[restore_checkpoint_id];
                 if (push[0] && (push_data0 != '0)) begin
                     free_bitmap_q[push_data0] <= 1'b1;
@@ -167,18 +173,20 @@ module free_pool_2w (
                 free_bitmap_q <= free_bitmap_n;
             end
 
-            if (push[0] && (push_data0 != '0)) begin
+            if ((architectural_restore !== 1'b1) &&
+                push[0] && (push_data0 != '0)) begin
                 for (int cp = 0; cp < CHECKPOINT_NUM; cp++) begin
                     checkpoints[cp][push_data0] <= 1'b1;
                 end
             end
-            if (push[1] && (push_data1 != '0)) begin
+            if ((architectural_restore !== 1'b1) &&
+                push[1] && (push_data1 != '0)) begin
                 for (int cp = 0; cp < CHECKPOINT_NUM; cp++) begin
                     checkpoints[cp][push_data1] <= 1'b1;
                 end
             end
 
-            if (checkpoint_save) begin
+            if ((architectural_restore !== 1'b1) && checkpoint_save) begin
                 checkpoints[checkpoint_id_save] <= checkpoint_bitmap;
             end
         end

@@ -24,7 +24,9 @@ module dispatch_packet_logic (
     input logic [defines_pkg::WIDTH-1:0] lane1_src1_value,
     input logic [defines_pkg::WIDTH-1:0] lane1_src2_value,
     input logic [defines_pkg::WIDTH-1:0] lane1_src3_value,
+    input logic halt,
     input logic csr_pending,
+    input logic rob_empty,
 
     pip_if.producer rob_packet_if,
     pip_if.producer alu_if,
@@ -39,6 +41,8 @@ module dispatch_packet_logic (
 
     logic lane0_valid;
     logic lane1_valid;
+    logic lane0_preexception;
+    logic lane1_preexception;
     logic lane0_nop;
     logic lane1_nop;
     logic lane0_alu;
@@ -60,22 +64,28 @@ module dispatch_packet_logic (
 
     assign lane0_valid = in_if.valid && in_if.data.lane0.valid;
     assign lane1_valid = in_if.valid && in_if.data.lane1.valid;
+    assign lane0_preexception = lane0_valid &&
+                                in_if.data.lane0.data.rob_entry.datapath.exception_valid;
+    assign lane1_preexception = lane1_valid &&
+                                in_if.data.lane1.data.rob_entry.datapath.exception_valid;
 
     assign lane0_nop = lane0_valid &&
+                       !lane0_preexception &&
                        (in_if.data.lane0.data.rs_entry.control_signal.fu_type == FU_NOP);
     assign lane1_nop = lane1_valid &&
+                       !lane1_preexception &&
                        (in_if.data.lane1.data.rs_entry.control_signal.fu_type == FU_NOP);
-    assign lane0_alu = lane0_valid &&
+    assign lane0_alu = lane0_valid && !lane0_preexception &&
                        (in_if.data.lane0.data.rs_entry.control_signal.fu_type == FU_ALU);
-    assign lane1_alu = lane1_valid &&
+    assign lane1_alu = lane1_valid && !lane1_preexception &&
                        (in_if.data.lane1.data.rs_entry.control_signal.fu_type == FU_ALU);
-    assign lane0_lsu = lane0_valid &&
+    assign lane0_lsu = lane0_valid && !lane0_preexception &&
                        (in_if.data.lane0.data.rs_entry.control_signal.fu_type == FU_MEM);
-    assign lane1_lsu = lane1_valid &&
+    assign lane1_lsu = lane1_valid && !lane1_preexception &&
                        (in_if.data.lane1.data.rs_entry.control_signal.fu_type == FU_MEM);
-    assign lane0_branch = lane0_valid &&
+    assign lane0_branch = lane0_valid && !lane0_preexception &&
                           (in_if.data.lane0.data.rs_entry.control_signal.fu_type == FU_BRANCH);
-    assign lane1_branch = lane1_valid &&
+    assign lane1_branch = lane1_valid && !lane1_preexception &&
                           (in_if.data.lane1.data.rs_entry.control_signal.fu_type == FU_BRANCH);
 
     assign lane0_csr = lane0_alu &&
@@ -112,10 +122,11 @@ module dispatch_packet_logic (
 
     // CSR/system operations are serialized until CSR completion tracking is
     // widened. This keeps the architectural side effects precise.
-    assign csr_blocked = (lane0_csr || lane1_csr) &&
-                         (csr_pending ||
-                          ((lane0_csr && lane1_valid && !lane1_nop) ||
-                           (lane1_csr && lane0_valid && !lane0_nop)));
+    assign csr_blocked = csr_pending ||
+                         ((lane0_csr || lane1_csr) &&
+                          ((rob_empty === 1'b0) ||
+                           ((lane0_csr && lane1_valid && !lane1_nop) ||
+                            (lane1_csr && lane0_valid && !lane0_nop))));
 
     always_comb begin
         lane0_instr = in_if.data.lane0.data;
@@ -138,11 +149,11 @@ module dispatch_packet_logic (
         lane1_instr.rs_entry.datapath.src3_value = lane1_src3_value;
     end
 
-    assign lane0_rs_ready = lane0_nop ||
+    assign lane0_rs_ready = lane0_preexception || lane0_nop ||
                             (lane0_alu && alu_if.ready) ||
                             (lane0_lsu && lsu_if.ready) ||
                             (lane0_branch && branch_if.ready);
-    assign lane1_rs_ready = lane1_nop ||
+    assign lane1_rs_ready = lane1_preexception || lane1_nop ||
                             (lane1_alu && (lane0_alu ? alu1_if.ready : alu_if.ready)) ||
                             (lane1_lsu && lsu_if.ready) ||
                             (lane1_branch && branch_if.ready);
@@ -153,7 +164,8 @@ module dispatch_packet_logic (
                             (!lane0_valid || lane0_rs_ready) &&
                             (!lane1_valid || lane1_rs_ready) &&
                             !duplicate_fu &&
-                            !csr_blocked;
+                            !csr_blocked &&
+                            !halt;
 
     assign in_if.ready = dispatch_ready;
 

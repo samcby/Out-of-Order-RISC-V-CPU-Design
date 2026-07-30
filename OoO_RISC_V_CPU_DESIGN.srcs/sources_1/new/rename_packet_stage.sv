@@ -14,6 +14,7 @@
 module rename_packet_stage (
     input  logic flush,
     input  logic restore_rat,
+    input  logic restore_committed,
     input  logic [defines_pkg::CHECKPOINT_W-1:0] restore_checkpoint_id,
     input  logic [defines_pkg::CHECKPOINT_NUM-1:0] active_checkpoint_mask,
     pip_if.consumer in_if,
@@ -21,8 +22,12 @@ module rename_packet_stage (
 
     input  logic [1:0]         retire_valid,
     input  logic [1:0]         retire_is_fp,
+    input  defines_pkg::areg_t retire_areg0,
+    input  defines_pkg::areg_t retire_areg1,
     input  defines_pkg::preg_t retire_preg0,
-    input  defines_pkg::preg_t retire_preg1
+    input  defines_pkg::preg_t retire_preg1,
+    input  defines_pkg::preg_t retire_new_preg0,
+    input  defines_pkg::preg_t retire_new_preg1
 );
 
     import defines_pkg::*;
@@ -293,9 +298,16 @@ module rename_packet_stage (
         active_checkpoint_mask;
     assign out_if.data.lane0.data.rob_entry.datapath.rd =
         in_if.data.lane0.data.datapath.rd;
-    assign out_if.data.lane0.data.rob_entry.datapath.complete = 1'b0;
+    assign out_if.data.lane0.data.rob_entry.datapath.complete =
+        in_if.data.lane0.data.datapath.exception_valid;
     assign out_if.data.lane0.data.rob_entry.datapath.result = '0;
     assign out_if.data.lane0.data.rob_entry.datapath.fp_flags = '0;
+    assign out_if.data.lane0.data.rob_entry.datapath.exception_valid =
+        in_if.data.lane0.data.datapath.exception_valid;
+    assign out_if.data.lane0.data.rob_entry.datapath.exception_cause =
+        in_if.data.lane0.data.datapath.exception_cause;
+    assign out_if.data.lane0.data.rob_entry.datapath.exception_tval =
+        in_if.data.lane0.data.datapath.exception_tval;
     assign out_if.data.lane0.data.rob_entry.datapath.pc =
         in_if.data.lane0.data.datapath.pc;
     assign out_if.data.lane0.data.rob_entry.datapath.instr =
@@ -317,9 +329,16 @@ module rename_packet_stage (
         lane1_visible_mask;
     assign out_if.data.lane1.data.rob_entry.datapath.rd =
         in_if.data.lane1.data.datapath.rd;
-    assign out_if.data.lane1.data.rob_entry.datapath.complete = 1'b0;
+    assign out_if.data.lane1.data.rob_entry.datapath.complete =
+        in_if.data.lane1.data.datapath.exception_valid;
     assign out_if.data.lane1.data.rob_entry.datapath.result = '0;
     assign out_if.data.lane1.data.rob_entry.datapath.fp_flags = '0;
+    assign out_if.data.lane1.data.rob_entry.datapath.exception_valid =
+        in_if.data.lane1.data.datapath.exception_valid;
+    assign out_if.data.lane1.data.rob_entry.datapath.exception_cause =
+        in_if.data.lane1.data.datapath.exception_cause;
+    assign out_if.data.lane1.data.rob_entry.datapath.exception_tval =
+        in_if.data.lane1.data.datapath.exception_tval;
     assign out_if.data.lane1.data.rob_entry.datapath.pc =
         in_if.data.lane1.data.datapath.pc;
     assign out_if.data.lane1.data.rob_entry.datapath.instr =
@@ -333,6 +352,15 @@ module rename_packet_stage (
         .checkpoint_id_save(checkpoint_id_save),
         .restore_en(restore_rat),
         .restore_checkpoint_id(restore_checkpoint_id),
+        .architectural_restore(restore_committed),
+        .retire_valid({
+            retire_valid[1] && !(retire_is_fp[1] === 1'b1),
+            retire_valid[0] && !(retire_is_fp[0] === 1'b1)
+        }),
+        .retire_areg0(retire_areg0),
+        .retire_areg1(retire_areg1),
+        .retire_new_preg0(retire_new_preg0),
+        .retire_new_preg1(retire_new_preg1),
         .lane0_src_reg_1a(in_if.data.lane0.data.datapath.rs1),
         .lane0_src_reg_2a(in_if.data.lane0.data.datapath.rs2),
         .lane0_des_reg_a(in_if.data.lane0.data.datapath.rd),
@@ -370,6 +398,7 @@ module rename_packet_stage (
         .checkpoint_id_save(checkpoint_id_save),
         .restore_en(restore_rat),
         .restore_checkpoint_id(restore_checkpoint_id),
+        .architectural_restore(restore_committed),
         .full(free_pool_full),
         .empty(free_pool_empty),
         .has_free_1(has_free_1),
@@ -404,12 +433,17 @@ module rename_packet_stage (
             retire_valid[1] && (retire_is_fp[1] === 1'b1),
             retire_valid[0] && (retire_is_fp[0] === 1'b1)
         }),
+        .retire_areg0(fp_defines_pkg::fp_areg_t'(retire_areg0)),
+        .retire_areg1(fp_defines_pkg::fp_areg_t'(retire_areg1)),
         .retire_preg0(fp_defines_pkg::fp_preg_t'(retire_preg0)),
         .retire_preg1(fp_defines_pkg::fp_preg_t'(retire_preg1)),
+        .retire_new_preg0(fp_defines_pkg::fp_preg_t'(retire_new_preg0)),
+        .retire_new_preg1(fp_defines_pkg::fp_preg_t'(retire_new_preg1)),
         .checkpoint_save(checkpoint_save),
         .checkpoint_id_save(checkpoint_id_save),
         .restore_en(restore_rat),
-        .restore_checkpoint_id(restore_checkpoint_id)
+        .restore_checkpoint_id(restore_checkpoint_id),
+        .architectural_restore(restore_committed)
     );
 
     always_ff @(posedge in_if.clk or negedge in_if.rst_n) begin

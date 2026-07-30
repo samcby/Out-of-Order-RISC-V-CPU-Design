@@ -13,7 +13,16 @@ namespace eval ooo_regression {
             tb_top_packet_backend_rv32i_smoke
             tb_top_packet_backend_25test
             tb_top_packet_backend_trap_smoke
+            tb_top_packet_backend_misaligned_smoke
+            tb_top_packet_backend_access_fault_smoke
+            tb_top_packet_backend_exception_interrupt_priority
+            tb_top_packet_backend_fence_smoke
+            tb_top_packet_backend_privilege_smoke
+            tb_top_packet_backend_pmp_smoke
             tb_top_packet_backend_interrupt_smoke
+            tb_top_packet_backend_precise_interrupt_smoke
+            tb_top_packet_backend_nested_interrupt_smoke
+            tb_top_packet_backend_wfi_level_irq_smoke
         }
         multi_issue {
             tb_fetch_packet_stage
@@ -34,12 +43,24 @@ namespace eval ooo_regression {
             tb_top_packet_backend_multi_issue_suite
             tb_top_packet_backend_rv32i_smoke
             tb_top_misaligned_smoke
+            tb_top_packet_backend_misaligned_smoke
+            tb_top_packet_backend_access_fault_smoke
+            tb_top_packet_backend_fence_smoke
         }
         invariants {
             tb_reg_alias_table_2w
             tb_free_pool_2w
             tb_rob_2w
             tb_lsu_commit_store
+            tb_top_packet_backend_misaligned_smoke
+            tb_top_packet_backend_access_fault_smoke
+            tb_top_packet_backend_exception_interrupt_priority
+            tb_top_packet_backend_fence_smoke
+            tb_top_packet_backend_privilege_smoke
+            tb_top_packet_backend_pmp_smoke
+            tb_top_packet_backend_precise_interrupt_smoke
+            tb_top_packet_backend_nested_interrupt_smoke
+            tb_top_packet_backend_wfi_level_irq_smoke
             tb_top_packet_backend_25test
         }
         performance {
@@ -60,6 +81,7 @@ namespace eval ooo_regression {
             tb_fp_simple_unit
             tb_top_packet_backend_fp_simple_smoke
             tb_top_packet_backend_fp_flags_smoke
+            tb_top_packet_backend_fp_fs_smoke
             tb_fp_add_sub_unit
             tb_top_packet_backend_fp_add_sub_smoke
             tb_fp_mul_unit
@@ -83,6 +105,7 @@ namespace eval ooo_regression {
             tb_fp_simple_unit
             tb_top_packet_backend_fp_simple_smoke
             tb_top_packet_backend_fp_flags_smoke
+            tb_top_packet_backend_fp_fs_smoke
             tb_fp_add_sub_unit
             tb_top_packet_backend_fp_add_sub_smoke
             tb_fp_mul_unit
@@ -116,7 +139,16 @@ namespace eval ooo_regression {
             tb_top_packet_backend_rv32i_smoke
             tb_top_packet_backend_25test
             tb_top_packet_backend_trap_smoke
+            tb_top_packet_backend_misaligned_smoke
+            tb_top_packet_backend_access_fault_smoke
+            tb_top_packet_backend_exception_interrupt_priority
+            tb_top_packet_backend_fence_smoke
+            tb_top_packet_backend_privilege_smoke
+            tb_top_packet_backend_pmp_smoke
             tb_top_packet_backend_interrupt_smoke
+            tb_top_packet_backend_precise_interrupt_smoke
+            tb_top_packet_backend_nested_interrupt_smoke
+            tb_top_packet_backend_wfi_level_irq_smoke
         }
     }
 }
@@ -168,6 +200,34 @@ proc prepare_regression_top {tb} {
     catch {update_compile_order -fileset sim_1}
 }
 
+proc regression_banner_status {tb} {
+    set project_dir [get_property DIRECTORY [current_project]]
+    set project_name [get_property NAME [current_project]]
+    set log_path [file join \
+        $project_dir \
+        "${project_name}.sim" \
+        "sim_1" \
+        "behav" \
+        "xsim" \
+        "simulate.log"]
+
+    if {![file exists $log_path]} {
+        return "missing"
+    }
+
+    set log_file [open $log_path r]
+    set log_text [read $log_file]
+    close $log_file
+
+    if {[string first "==== $tb PASS ====" $log_text] >= 0} {
+        return "pass"
+    }
+    if {[string first "==== $tb FAIL" $log_text] >= 0} {
+        return "fail"
+    }
+    return "missing"
+}
+
 proc run_regression {{suite quick}} {
     if {[current_project -quiet] eq ""} {
         error "Open OoO_RISC_V_CPU_DESIGN.xpr before running regression."
@@ -181,6 +241,7 @@ proc run_regression {{suite quick}} {
     set tests $::ooo_regression::suites($suite)
     set total [llength $tests]
     set launch_failures 0
+    set functional_failures 0
     set index 0
 
     puts "==== Starting '$suite' regression ($total simulation tops) ===="
@@ -210,19 +271,31 @@ proc run_regression {{suite quick}} {
         if {$tb eq "tb_top_packet_backend_long_stress"} {
             set run_time 1000000ns
         }
-        if {[catch {run $run_time} message]} {
+        set run_failed [catch {run $run_time} message]
+        if {$run_failed} {
             puts "ERROR: simulation command failed for $tb"
             puts $message
             incr launch_failures
         }
 
+        # XSim may not flush simulate.log until the simulation is closed.
         catch {close_sim}
         after 100
+
+        if {!$run_failed} {
+            set banner_status [regression_banner_status $tb]
+            if {$banner_status eq "fail"} {
+                puts "ERROR: functional FAIL banner reported by $tb"
+                incr functional_failures
+            } elseif {$banner_status eq "missing"} {
+                puts "ERROR: no PASS/FAIL banner reported by $tb"
+                incr functional_failures
+            }
+        }
     }
 
     puts ""
-    puts "==== '$suite' regression finished; launch/runtime failures: $launch_failures ===="
-    puts "Review the console for each testbench PASS/FAIL banner."
+    puts "==== '$suite' regression finished; launch/runtime failures: $launch_failures; functional failures: $functional_failures ===="
 }
 
 proc list_regression_suites {} {

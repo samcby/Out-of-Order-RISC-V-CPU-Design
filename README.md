@@ -3,8 +3,9 @@
 This repository contains a SystemVerilog implementation of a speculative,
 out-of-order RV32IF processor developed in Vivado 2019.1. The current mainline
 is a packetized 2-wide superscalar core with register renaming, reservation
-stations, precise in-order retirement, branch recovery, machine-mode traps and
-interrupts, IEEE-754 binary32 execution, and a cached memory hierarchy.
+stations, precise in-order retirement, branch recovery, U/M privilege modes,
+sixteen-entry physical memory protection, machine traps and interrupts,
+IEEE-754 binary32 execution, and a cached memory hierarchy.
 
 The active design top is:
 
@@ -86,7 +87,7 @@ The core has one branch unit and one LSU. Therefore `branch + branch` and
 - Precise physical-register reclamation
 - Wrong-path register and memory operations squashed before retirement
 
-## ISA and Machine-Mode Support
+## ISA and Privileged Architecture
 
 The current integer target is RV32I.
 
@@ -101,13 +102,14 @@ The current integer target is RV32I.
 - Jumps: `jal`, `jalr`
 - Loads: `lb`, `lh`, `lw`, `lbu`, `lhu`
 - Stores: `sb`, `sh`, `sw`
-- `fence` is treated as a no-op in this prototype
+- `fence` and `fence.i` use a serialized backend path; they wait for older
+  retirement and a quiescent LSU/cache before completing
 
 ### CSR and System Instructions
 
 - `csrrw`, `csrrs`, `csrrc`
 - `csrrwi`, `csrrsi`, `csrrci`
-- `ecall`, `ebreak`, `mret`
+- `ecall`, `ebreak`, `mret`, `wfi`
 
 Implemented machine CSRs:
 
@@ -118,18 +120,40 @@ Implemented machine CSRs:
 - `mcause`
 - `mtval`
 - `mip`
+- `pmpcfg0`-`pmpcfg3`
+- `pmpaddr0`-`pmpaddr15`
 
-Unimplemented or illegal CSR accesses raise an illegal-instruction exception.
+CSR privilege is checked against the current U/M mode. Unimplemented,
+read-only-write, or insufficient-privilege accesses raise an
+illegal-instruction exception.
+
+The core implements the standard minimum of sixteen statically prioritized PMP
+entries with OFF, TOR, NA4, and NAPOT addressing, R/W/X permissions, and the
+architectural Lock bit. U-mode instruction fetches, loads, and stores are
+checked before entering the existing precise access-fault path. The
+lowest-numbered entry matching any accessed byte wins, and an entry that only
+partially covers an access causes a fault. Unlocked entries are bypassed in
+M-mode; locked entries also constrain M-mode. Locking a TOR entry additionally
+locks its preceding address register. The reset value gives entry zero a
+full-address-space RWX TOR region so existing bare-metal programs remain
+compatible until M-mode software installs a stricter policy. `mstatus.MPRV`
+is implemented for M-mode loads and stores: when set, PMP checks use the U/M
+mode encoded in `MPP`, while instruction fetch continues to use the current
+privilege.
 
 ### Traps and Interrupts
 
 Supported synchronous exceptions include:
 
 - Instruction address misaligned
+- Instruction access fault
 - Illegal instruction
 - Breakpoint
 - Load address misaligned
+- Load access fault
 - Store address misaligned
+- Store access fault
+- User-mode ECALL
 - Machine-mode ECALL
 
 Supported machine interrupts:
@@ -139,12 +163,29 @@ Supported machine interrupts:
 3. Timer interrupt
 
 This order is also the implemented interrupt priority. `mtvec` direct and
-vectored modes are supported. Trap entry updates `mepc`, `mcause`, `mtval`,
-`MIE`, `MPIE`, and `MPP`; `MRET` restores the corresponding machine status and
-redirects to `mepc`.
+vectored modes are supported. The core boots in M-mode and can enter U-mode
+with `MRET`. Trap entry records the previous privilege in `MPP`, enters M-mode,
+and updates `mepc`, `mcause`, `mtval`, `MIE`, and `MPIE`. `MRET` restores the
+saved privilege and interrupt-enable state, redirects to `mepc`, and flushes
+all younger frontend and backend work.
 
-Interrupts are currently taken at a safe ROB-empty boundary rather than being
-injected at the commit head.
+Pending interrupts retire any already-complete architectural prefix first.
+When the oldest ROB entry is still incomplete, the core takes the interrupt
+without draining younger work, records that entry's PC in `mepc`, flushes all
+speculative state, and replays the interrupted instruction after `MRET`.
+Nested machine interrupts are supported through the standard software-managed
+protocol: an outer handler saves the single `mstatus`/`mepc`/`mcause` context,
+reenables `MIE`, services an inner interrupt, then restores the outer context
+before its final `MRET`. Architectural trap flushes also invalidate every
+in-flight branch-pipeline entry so stale redirects cannot escape recovery.
+
+The software, timer, and external interrupt pins are modeled as level-sensitive
+sources. A line that remains asserted stays visible in `mip` and can retrigger
+after `MRET`; deasserting the line clears the pending bit. `WFI` retires at a
+precise serialized boundary and then blocks younger dispatch. A locally enabled
+pending interrupt wakes the core even when global `mstatus.MIE` is clear; trap
+entry still requires the normal global-enable rule. This permits wake-without-
+trap behavior as well as ordinary interrupt-driven wakeup.
 
 ## Memory System
 
@@ -171,6 +212,8 @@ Reservation station
 - Store address/data capture completes the ROB entry
 - Store memory side effects occur only after ROB commit
 - Wrong-path stores are removed before modifying the cache
+- `fence` and `fence.i` complete only after older instructions retire and all
+  buffered or in-flight data-memory operations drain
 
 The current structures provide practical load/store ordering but are not yet a
 fully speculative, high-bandwidth load-store queue.
@@ -213,7 +256,7 @@ Important RTL modules:
 - `memory_order_queue.sv`: ordered memory scheduling
 - `lsu.sv`: loads, precise stores, and forwarding
 - `data_cache.sv`: write-back D-cache
-- `csr_file.sv`: machine CSR and trap state
+- `csr_file.sv`: machine CSR, U/M privilege, PMP, and trap state
 
 ## Validation
 
@@ -356,18 +399,28 @@ changes.
 - No `MEM + MEM` or `branch + branch` issue
 - CSR/system operations are serialized
 - Blocking D-cache with no MSHRs
+- `fence.i` has no separate instruction-cache invalidation action because the
+  current frontend has no instruction cache
 - No I-cache/D-cache shared bus or memory arbiter
 - No virtual memory
-- Machine-mode-oriented privilege support only
-- Interrupts wait for a ROB-empty safe point
-- `mstatus.FS` is software-visible and becomes Dirty when committed FP work
-  modifies architectural FP state
-- Trapping FP instructions while `mstatus.FS=Off` is not yet enforced
+- U-mode and M-mode only; no S-mode or trap delegation
+- PMP uses sixteen entries and 4-byte grain, but Smepmp enhancements are not
+  implemented
+- Interrupt entry does not share a cycle with normal retirement; a pending
+  interrupt first retires the currently complete ROB prefix, then takes at the
+  next incomplete precise boundary
+- `WFI` implements architectural sleep/wakeup but does not add technology-
+  specific clock gating; ASIC clock/power gating remains an implementation step
 
 ## RV32F Support
 
 The floating-point implementation includes:
 
+- production reset with `mstatus.FS=Off`
+- precise illegal-instruction traps for every FP opcode and FP CSR access while
+  `mstatus.FS=Off`, with no FPU, LSU, FP-CSR, or FP-register side effects
+- `mstatus.FS` transition to Dirty only when committed FP work modifies
+  architectural FP state
 - complete RV32F instruction-class decoding
 - explicit integer-to-FP and FP-to-integer register routing
 - independent 128-entry floating-point physical register storage
@@ -440,12 +493,11 @@ builds its RISC-V specialization with MinGW, and rewrites
 larger or differently seeded campaign before a release.
 
 The implemented instruction-level datapath now covers the RV32F computational,
-conversion, comparison, move/classification, and load/store families. Future
-FP work is primarily validation and implementation quality: differential
-testing against a reference model, full `mstatus.FS=Off` enforcement, and
-replacing the current divide/square-root numeric core with a smaller
-digit-recurrence datapath without changing its shared multi-cycle
-issue/completion contract.
+conversion, comparison, move/classification, load/store, CSR-state, and
+disabled-state trap families. Future FP work is primarily implementation
+quality and broader randomized validation, including replacing the current
+divide/square-root numeric core with a smaller digit-recurrence datapath
+without changing its shared multi-cycle issue/completion contract.
 
 ## Long-Program Stress Verification
 

@@ -86,7 +86,11 @@ module decode_controller (
             CSR_MTVAL,
             CSR_MIP,
             CSR_MHARTID: csr_addr_implemented = 1'b1;
-            default: csr_addr_implemented = 1'b0;
+            default: begin
+                csr_addr_implemented =
+                    ((addr >= CSR_PMPCFG0) && (addr <= CSR_PMPCFG3)) ||
+                    ((addr >= CSR_PMPADDR0) && (addr <= CSR_PMPADDR15));
+            end
         endcase
     end
     endfunction
@@ -473,8 +477,20 @@ module decode_controller (
             end
 
             7'b0001111: begin
-                fu_type = FU_NOP;
-                rename  = 1'b0;
+                // FENCE and FENCE.I share the serialized system path. The
+                // backend drains older work and the LSU before completing
+                // either instruction. This core has no instruction cache, so
+                // FENCE.I needs no additional cache invalidation operation.
+                // RV32I reserves the remaining fields for future fence
+                // extensions. Base implementations must ignore them.
+                if ((funct3 == 3'b000) || (funct3 == 3'b001)) begin
+                    sys_en  = 1'b1;
+                    sys_op  = SYS_FENCE;
+                    fu_type = FU_ALU;
+                    rename  = 1'b0;
+                end else begin
+                    mark_illegal();
+                end
             end
 
             7'b1110011: begin
@@ -527,6 +543,16 @@ module decode_controller (
                             if (system_rs1 == 5'd0 && system_rd == 5'd0) begin
                                 sys_en  = 1'b1;
                                 sys_op  = SYS_MRET;
+                                fu_type = FU_ALU;
+                                rename  = 1'b0;
+                            end else begin
+                                mark_illegal();
+                            end
+                        end
+                        12'h105: begin // WFI
+                            if (system_rs1 == 5'd0 && system_rd == 5'd0) begin
+                                sys_en  = 1'b1;
+                                sys_op  = SYS_WFI;
                                 fu_type = FU_ALU;
                                 rename  = 1'b0;
                             end else begin

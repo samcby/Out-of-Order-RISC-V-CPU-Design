@@ -96,7 +96,9 @@ module tb_top_packet_backend_fp_simple_smoke;
     end
     endtask
 
-    top_packet_backend u_dut (
+    top_packet_backend #(
+        .RESET_FS_INITIAL(1'b1)
+    ) u_dut (
         .clk(clk),
         .rst_n(rst_n),
         .software_irq(1'b0),

@@ -57,6 +57,7 @@ module tb_dispatch_packet_stage;
     pip_if #(issue_exe_t) issue1_if (.clk(clk), .rst_n(rst_n));
 
     dispatch_packet_stage dut (
+        .halt(1'b0),
         .lane0_src1_ready(lane0_src1_ready),
         .lane0_src2_ready(lane0_src2_ready),
         .lane0_src1_value(lane0_src1_value),
@@ -238,7 +239,7 @@ module tb_dispatch_packet_stage;
         set_lane(in_if.data.lane0, 1'b1, FU_ALU, rob_tag_t'(3), areg_t'(7), preg_t'(34));
         set_lane(in_if.data.lane1, 1'b1, FU_ALU, rob_tag_t'(4), areg_t'(8), preg_t'(35));
         #1;
-        check_ok(!in_if.ready, "stage stalls duplicate ALU packet while RS is single-write");
+        check_ok(in_if.ready, "stage accepts duplicate ALU packet with the two-write RS");
 
         $display("==== tb_dispatch_packet_stage PASS ====");
         $finish;

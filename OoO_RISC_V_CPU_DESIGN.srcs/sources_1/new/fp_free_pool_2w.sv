@@ -29,22 +29,34 @@ module fp_free_pool_2w #(
     input  logic checkpoint_save,
     input  logic [CHECKPOINT_W-1:0] checkpoint_id_save,
     input  logic restore_en,
-    input  logic [CHECKPOINT_W-1:0] restore_checkpoint_id
+    input  logic [CHECKPOINT_W-1:0] restore_checkpoint_id,
+    input  logic architectural_restore,
+    input  logic [fp_defines_pkg::FP_PREG_NUM-1:0] mapped_bitmap
 );
 
     import fp_defines_pkg::*;
 
     logic [FP_PREG_NUM-1:0] free_bitmap_q;
     logic [FP_PREG_NUM-1:0] free_bitmap_n;
+    logic [FP_PREG_NUM-1:0] alloc_bitmap;
     logic [FP_PREG_NUM-1:0] search_bitmap;
     logic [FP_PREG_NUM-1:0] checkpoint_bitmap;
     logic [FP_PREG_NUM-1:0] checkpoints [0:CHECKPOINT_NUM-1];
     logic [$clog2(FP_PREG_NUM+1)-1:0] free_count;
 
     always_comb begin
+        alloc_bitmap = free_bitmap_q;
+        for (int i = 0; i < FP_PREG_NUM; i++) begin
+            if (mapped_bitmap[i] === 1'b1) begin
+                alloc_bitmap[i] = 1'b0;
+            end
+        end
+        if (retire_valid[0]) alloc_bitmap[retire_preg0] = 1'b0;
+        if (retire_valid[1]) alloc_bitmap[retire_preg1] = 1'b0;
+
         free_count = '0;
         for (int i = 0; i < FP_PREG_NUM; i++) begin
-            if (free_bitmap_q[i]) free_count = free_count + 1'b1;
+            if (alloc_bitmap[i]) free_count = free_count + 1'b1;
         end
     end
 
@@ -56,7 +68,7 @@ module fp_free_pool_2w #(
         allocate_preg1 = '0;
         allocate_valid0 = 1'b0;
         allocate_valid1 = 1'b0;
-        search_bitmap = free_bitmap_q;
+        search_bitmap = alloc_bitmap;
 
         if (allocate[0]) begin
             for (int i = 0; i < FP_PREG_NUM; i++) begin
@@ -87,6 +99,11 @@ module fp_free_pool_2w #(
         end
         if (retire_valid[0]) free_bitmap_n[retire_preg0] = 1'b1;
         if (retire_valid[1]) free_bitmap_n[retire_preg1] = 1'b1;
+        for (int i = 0; i < FP_PREG_NUM; i++) begin
+            if (mapped_bitmap[i] === 1'b1) begin
+                free_bitmap_n[i] = 1'b0;
+            end
+        end
 
         checkpoint_bitmap = free_bitmap_n;
     end
@@ -100,29 +117,54 @@ module fp_free_pool_2w #(
                 end
             end
         end else begin
-            if (restore_en) begin
+            if (architectural_restore === 1'b1) begin
+                for (int i = 0; i < FP_PREG_NUM; i++) begin
+                    free_bitmap_q[i] <= !(mapped_bitmap[i] === 1'b1);
+                end
+            end else if (restore_en) begin
                 free_bitmap_q <= checkpoints[restore_checkpoint_id];
                 if (retire_valid[0]) free_bitmap_q[retire_preg0] <= 1'b1;
                 if (retire_valid[1]) free_bitmap_q[retire_preg1] <= 1'b1;
+                for (int i = 0; i < FP_PREG_NUM; i++) begin
+                    if (mapped_bitmap[i] === 1'b1) begin
+                        free_bitmap_q[i] <= 1'b0;
+                    end
+                end
             end else begin
                 free_bitmap_q <= free_bitmap_n;
             end
 
-            if (retire_valid[0]) begin
+            if ((architectural_restore !== 1'b1) && retire_valid[0]) begin
                 for (int cp = 0; cp < CHECKPOINT_NUM; cp++) begin
                     checkpoints[cp][retire_preg0] <= 1'b1;
                 end
             end
-            if (retire_valid[1]) begin
+            if ((architectural_restore !== 1'b1) && retire_valid[1]) begin
                 for (int cp = 0; cp < CHECKPOINT_NUM; cp++) begin
                     checkpoints[cp][retire_preg1] <= 1'b1;
                 end
             end
 
-            if (checkpoint_save) begin
+            if ((architectural_restore !== 1'b1) && checkpoint_save) begin
                 checkpoints[checkpoint_id_save] <= checkpoint_bitmap;
             end
         end
     end
+
+`ifndef SYNTHESIS
+    always_ff @(posedge clk) begin
+        if (rst_n === 1'b1) begin
+            assert (!(allocate_valid0 && allocate_valid1) ||
+                    (allocate_preg0 != allocate_preg1))
+                else $error("[ASSERT:FP_FREE_POOL] dual allocation returned duplicate preg");
+            assert ((alloc_bitmap & mapped_bitmap) == '0)
+                else $error("[ASSERT:FP_FREE_POOL] mapped preg is allocatable");
+            if ((architectural_restore !== 1'b1) && !restore_en) begin
+                assert ((free_bitmap_q & mapped_bitmap) == '0)
+                    else $error("[ASSERT:FP_FREE_POOL] mapped preg is marked free");
+            end
+        end
+    end
+`endif
 
 endmodule

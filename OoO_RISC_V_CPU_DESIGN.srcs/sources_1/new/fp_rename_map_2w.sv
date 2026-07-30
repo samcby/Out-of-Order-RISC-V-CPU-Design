@@ -38,13 +38,18 @@ module fp_rename_map_2w #(
     output logic rename_ready,
 
     input  logic [1:0] retire_valid,
+    input  fp_defines_pkg::fp_areg_t retire_areg0,
+    input  fp_defines_pkg::fp_areg_t retire_areg1,
     input  fp_defines_pkg::fp_preg_t retire_preg0,
     input  fp_defines_pkg::fp_preg_t retire_preg1,
+    input  fp_defines_pkg::fp_preg_t retire_new_preg0,
+    input  fp_defines_pkg::fp_preg_t retire_new_preg1,
 
     input  logic checkpoint_save,
     input  logic [CHECKPOINT_W-1:0] checkpoint_id_save,
     input  logic restore_en,
-    input  logic [CHECKPOINT_W-1:0] restore_checkpoint_id
+    input  logic [CHECKPOINT_W-1:0] restore_checkpoint_id,
+    input  logic architectural_restore
 );
 
     logic allocate_valid0;
@@ -54,6 +59,7 @@ module fp_rename_map_2w #(
     logic [1:0] needed_count;
     logic [1:0] rat_write_en;
     logic checkpoint_commit;
+    logic [fp_defines_pkg::FP_PREG_NUM-1:0] mapped_bitmap;
 
     assign needed_count = {1'b0, rename_valid[0]} +
                           {1'b0, rename_valid[1]};
@@ -76,6 +82,12 @@ module fp_rename_map_2w #(
         .checkpoint_id_save   (checkpoint_id_save),
         .restore_en           (restore_en),
         .restore_checkpoint_id(restore_checkpoint_id),
+        .architectural_restore(architectural_restore),
+        .retire_valid         (retire_valid),
+        .retire_areg0         (retire_areg0),
+        .retire_areg1         (retire_areg1),
+        .retire_new_preg0     (retire_new_preg0),
+        .retire_new_preg1     (retire_new_preg1),
         .lane0_src0           (lane0_src0),
         .lane0_src1           (lane0_src1),
         .lane0_src2           (lane0_src2),
@@ -93,7 +105,8 @@ module fp_rename_map_2w #(
         .lane1_src0_preg      (lane1_src0_preg),
         .lane1_src1_preg      (lane1_src1_preg),
         .lane1_src2_preg      (lane1_src2_preg),
-        .lane1_old_preg       (lane1_old_preg)
+        .lane1_old_preg       (lane1_old_preg),
+        .mapped_bitmap        (mapped_bitmap)
     );
 
     fp_free_pool_2w #(
@@ -116,7 +129,9 @@ module fp_rename_map_2w #(
         .checkpoint_save      (checkpoint_commit),
         .checkpoint_id_save   (checkpoint_id_save),
         .restore_en           (restore_en),
-        .restore_checkpoint_id(restore_checkpoint_id)
+        .restore_checkpoint_id(restore_checkpoint_id),
+        .architectural_restore(architectural_restore),
+        .mapped_bitmap        (mapped_bitmap)
     );
 
 endmodule

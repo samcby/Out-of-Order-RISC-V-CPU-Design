@@ -14,8 +14,13 @@
 // top.sv.
 module top_packet_backend #(
     parameter bit ENABLE_2WIDE = 1'b1,
+    parameter logic [31:0] IMEM_BASE_ADDR = 32'h00000000,
     parameter int IMEM_DEPTH_BYTES = 4096,
-    parameter int DMEM_WORDS = 256
+    parameter logic [31:0] DMEM_BASE_ADDR = 32'h00010000,
+    parameter bit ENABLE_ACCESS_FAULTS = 1'b1,
+    parameter bit ENABLE_PMP = 1'b1,
+    parameter int DMEM_WORDS = 256,
+    parameter bit RESET_FS_INITIAL = 1'b0
 )(
     input  logic clk,
     input  logic rst_n,
@@ -110,13 +115,22 @@ module top_packet_backend #(
     rob_tag_t       complete_tag;
     logic [WIDTH-1:0] complete_result;
     logic [4:0]     complete_fp_flags;
+    logic           complete_exception_valid;
+    logic [WIDTH-1:0] complete_exception_cause;
+    logic [WIDTH-1:0] complete_exception_tval;
     logic           branch_complete_valid;
     rob_tag_t       branch_complete_tag;
     logic [WIDTH-1:0] branch_complete_result;
+    logic           branch_complete_exception_valid;
+    logic [WIDTH-1:0] branch_complete_exception_cause;
+    logic [WIDTH-1:0] branch_complete_exception_tval;
     logic           lane1_complete_valid;
     rob_tag_t       lane1_complete_tag;
     logic [WIDTH-1:0] lane1_complete_result;
     logic [4:0]     lane1_complete_fp_flags;
+    logic           lane1_complete_exception_valid;
+    logic [WIDTH-1:0] lane1_complete_exception_cause;
+    logic [WIDTH-1:0] lane1_complete_exception_tval;
 
     logic           retire_valid;
     logic           retire_valid1;
@@ -125,6 +139,9 @@ module top_packet_backend #(
     preg_t          retire_preg1;
     logic           commit_en;
     logic           commit_en1;
+    logic           trap_commit;
+    logic           architectural_flush;
+    logic           mret_flush_exe;
     logic           fp_state_dirty_commit;
     logic [63:0]    retire_order_q;
     retire_trace_t  retire_trace0_next;
@@ -140,6 +157,7 @@ module top_packet_backend #(
     logic           fp_csr_write_en;
     logic [11:0]    fp_csr_write_addr;
     logic [31:0]    fp_csr_write_data;
+    logic           memory_quiescent;
 
     logic           pc_src_exe;
     logic [WIDTH-1:0] pc_branch_exe;
@@ -147,23 +165,33 @@ module top_packet_backend #(
     logic           software_irq_level;
     logic           timer_irq_level;
     logic           external_irq_level;
-    logic           software_irq_level_q;
-    logic           timer_irq_level_q;
-    logic           external_irq_level_q;
-    logic           software_irq_rise;
-    logic           timer_irq_rise;
-    logic           external_irq_rise;
     logic           software_irq_pending_q;
     logic           timer_irq_pending_q;
     logic           external_irq_pending_q;
+    logic           software_irq_locally_enabled;
+    logic           timer_irq_locally_enabled;
+    logic           external_irq_locally_enabled;
     logic           software_irq_enabled;
     logic           timer_irq_enabled;
     logic           external_irq_enabled;
+    logic           interrupt_request;
     logic           interrupt_take;
     logic [WIDTH-1:0] interrupt_mepc;
     logic [WIDTH-1:0] interrupt_mcause;
     logic [WIDTH-1:0] csr_mstatus_value;
     logic [WIDTH-1:0] csr_mie_value;
+    logic [1:0]       csr_privilege_mode;
+    logic             wfi_commit;
+    logic             wfi_wake_request;
+    logic             wfi_sleep_q;
+    logic [WIDTH-1:0] wfi_resume_pc_q;
+    logic             mret_resume_valid_q;
+    logic [WIDTH-1:0] mret_resume_pc_q;
+    logic [WIDTH-1:0] csr_pmpcfg0_value;
+    logic [WIDTH-1:0] csr_pmpaddr0_value;
+    logic [PMP_ENTRY_COUNT*8-1:0] csr_pmpcfg_values;
+    logic [PMP_ENTRY_COUNT*WIDTH-1:0] csr_pmpaddr_values;
+    logic             machine_interrupt_global_enable;
 
     localparam int MSTATUS_MIE_BIT = 3;
     localparam int MIE_MSIE_BIT    = 3;
@@ -218,7 +246,9 @@ module top_packet_backend #(
     logic [31:0] perf_dispatch_stall_count_q;
     logic [31:0] perf_active_cycle_count_q;
 
-    assign flush_exe = pc_src_exe || interrupt_take;
+    assign architectural_flush = trap_commit || interrupt_take ||
+                                  mret_flush_exe;
+    assign flush_exe = pc_src_exe || architectural_flush;
 
     assign lane0_branch_rename_fire =
         pipe_rd_pkt.valid && pipe_rd_pkt.ready &&
@@ -254,44 +284,77 @@ module top_packet_backend #(
     assign software_irq_level = (software_irq === 1'b1);
     assign timer_irq_level    = (timer_irq === 1'b1);
     assign external_irq_level = (external_irq === 1'b1);
-    assign software_irq_rise  = software_irq_level && !software_irq_level_q;
-    assign timer_irq_rise     = timer_irq_level && !timer_irq_level_q;
-    assign external_irq_rise  = external_irq_level && !external_irq_level_q;
-    assign software_irq_enabled = csr_mstatus_value[MSTATUS_MIE_BIT] &&
-                                  csr_mie_value[MIE_MSIE_BIT] &&
-                                  software_irq_pending_q;
-    assign timer_irq_enabled    = csr_mstatus_value[MSTATUS_MIE_BIT] &&
-                                  csr_mie_value[MIE_MTIE_BIT] &&
-                                  timer_irq_pending_q;
-    assign external_irq_enabled = csr_mstatus_value[MSTATUS_MIE_BIT] &&
-                                  csr_mie_value[MIE_MEIE_BIT] &&
-                                  external_irq_pending_q;
-    assign interrupt_take = rob_empty_i &&
-                            (external_irq_enabled ||
-                             software_irq_enabled ||
-                             timer_irq_enabled);
+    assign machine_interrupt_global_enable =
+        (csr_privilege_mode != PRV_M) ||
+        csr_mstatus_value[MSTATUS_MIE_BIT];
+    assign software_irq_locally_enabled =
+        csr_mie_value[MIE_MSIE_BIT] && software_irq_pending_q;
+    assign timer_irq_locally_enabled =
+        csr_mie_value[MIE_MTIE_BIT] && timer_irq_pending_q;
+    assign external_irq_locally_enabled =
+        csr_mie_value[MIE_MEIE_BIT] && external_irq_pending_q;
+    assign software_irq_enabled = machine_interrupt_global_enable &&
+                                  software_irq_locally_enabled;
+    assign timer_irq_enabled    = machine_interrupt_global_enable &&
+                                  timer_irq_locally_enabled;
+    assign external_irq_enabled = machine_interrupt_global_enable &&
+                                  external_irq_locally_enabled;
+    assign wfi_wake_request = external_irq_locally_enabled ||
+                              software_irq_locally_enabled ||
+                              timer_irq_locally_enabled;
+    assign interrupt_request = external_irq_enabled ||
+                               software_irq_enabled ||
+                               timer_irq_enabled;
+    // Retire the already-complete architectural prefix before taking a pending
+    // interrupt. Once the oldest entry is incomplete, flush and replay it from
+    // its ROB PC instead of waiting for all younger work to finish.
+    assign interrupt_take = !trap_commit &&
+                            !commit_en &&
+                            !mret_flush_exe &&
+                            interrupt_request;
     assign interrupt_mcause = external_irq_enabled ? MCAUSE_MEI :
                               software_irq_enabled ? MCAUSE_MSI :
                               MCAUSE_MTI;
-    assign interrupt_mepc = (pipe_fd_pkt_s.valid && pipe_fd_pkt_s.data.lane0.valid) ?
-                            pipe_fd_pkt_s.data.lane0.data.pc :
+    assign interrupt_mepc = wfi_sleep_q ?
+                            wfi_resume_pc_q :
+                            rob_head_valid_i ?
+                            rob_head.datapath.pc :
+                            (pipe_rd_pkt_d.valid && pipe_rd_pkt_d.data.lane0.valid) ?
+                            pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.pc :
+                            (pipe_rd_pkt_s.valid && pipe_rd_pkt_s.data.lane0.valid) ?
+                            pipe_rd_pkt_s.data.lane0.data.rs_entry.datapath.pc :
+                            (pipe_rd_pkt.valid && pipe_rd_pkt.data.lane0.valid) ?
+                            pipe_rd_pkt.data.lane0.data.rs_entry.datapath.pc :
                             (pipe_dr_pkt_s.valid && pipe_dr_pkt_s.data.lane0.valid) ?
                             pipe_dr_pkt_s.data.lane0.data.datapath.pc :
                             (pipe_dr_pkt.valid && pipe_dr_pkt.data.lane0.valid) ?
                             pipe_dr_pkt.data.lane0.data.datapath.pc :
-                            (pipe_rd_pkt_s.valid && pipe_rd_pkt_s.data.lane0.valid) ?
-                            pipe_rd_pkt_s.data.lane0.data.rs_entry.datapath.pc :
-                            (pipe_rd_pkt_d.valid && pipe_rd_pkt_d.data.lane0.valid) ?
-                            pipe_rd_pkt_d.data.lane0.data.rs_entry.datapath.pc :
+                            (pipe_fd_pkt_s.valid && pipe_fd_pkt_s.data.lane0.valid) ?
+                            pipe_fd_pkt_s.data.lane0.data.pc :
+                            (pipe_fd_pkt.valid && pipe_fd_pkt.data.lane0.valid) ?
+                            pipe_fd_pkt.data.lane0.data.pc :
+                            mret_resume_valid_q ?
+                            mret_resume_pc_q :
                             32'b0;
 
-    assign commit_en    = rob_head_valid_i && rob_head_complete_i;
+    assign trap_commit = rob_head_valid_i &&
+                         rob_head_complete_i &&
+                         rob_head.datapath.exception_valid;
+    assign commit_en    = rob_head_valid_i &&
+                          rob_head_complete_i &&
+                          !rob_head.datapath.exception_valid;
+    assign wfi_commit   = commit_en &&
+                          (rob_head.datapath.instr == 32'h10500073);
     assign commit_en1   = ENABLE_2WIDE && commit_en &&
-                          rob_head1_valid_i && rob_head1_complete_i;
-    // LSU store buffer filters by tag, so forward every committed ROB tag.
-    // This avoids losing a store commit if ROB-side store metadata is stale.
-    assign commit_store_valid0 = commit_en;
-    assign commit_store_valid1 = commit_en1;
+                          !wfi_commit &&
+                          rob_head1_valid_i &&
+                          rob_head1_complete_i &&
+                          !rob_head1.datapath.exception_valid;
+    // Only stores create memory-visibility events. Keeping non-store retire
+    // tags off this path prevents a wrapped ROB tag from poisoning a future
+    // store-buffer entry.
+    assign commit_store_valid0 = commit_en && rob_head.control_signal.store;
+    assign commit_store_valid1 = commit_en1 && rob_head1.control_signal.store;
     assign retire_valid = commit_en &&
                           (rob_head.datapath.dest_is_fp ||
                            ((rob_head.datapath.new_des_preg != '0) &&
@@ -410,7 +473,7 @@ module top_packet_backend #(
             perf_dispatch_stall_count_q        <= '0;
             perf_active_cycle_count_q          <= '0;
         end else begin
-            if (!load_en) begin
+            if (!load_en && !wfi_sleep_q) begin
                 perf_active_cycle_count_q <= perf_active_cycle_count_q + 1'b1;
             end
 
@@ -516,7 +579,7 @@ module top_packet_backend #(
     end
 
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
+        if (!rst_n || architectural_flush) begin
             active_checkpoint_mask_q <= '0;
             for (int i = 0; i < CHECKPOINT_NUM; i++) begin
                 checkpoint_dep_mask_q[i] <= '0;
@@ -600,33 +663,44 @@ module top_packet_backend #(
 
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            software_irq_level_q <= 1'b0;
-            timer_irq_level_q    <= 1'b0;
-            external_irq_level_q <= 1'b0;
             software_irq_pending_q <= 1'b0;
             timer_irq_pending_q    <= 1'b0;
             external_irq_pending_q <= 1'b0;
         end else begin
-            software_irq_level_q <= software_irq_level;
-            timer_irq_level_q    <= timer_irq_level;
-            external_irq_level_q <= external_irq_level;
+            // Platform interrupt pins are level-sensitive. A source that stays
+            // asserted therefore remains visible in mip after trap entry and
+            // can be selected again after MRET restores interrupt enable.
+            software_irq_pending_q <= software_irq_level;
+            timer_irq_pending_q    <= timer_irq_level;
+            external_irq_pending_q <= external_irq_level;
+        end
+    end
 
-            if (interrupt_take && (interrupt_mcause == MCAUSE_MSI)) begin
-                software_irq_pending_q <= 1'b0;
-            end else if (software_irq_rise) begin
-                software_irq_pending_q <= 1'b1;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            wfi_sleep_q     <= 1'b0;
+            wfi_resume_pc_q <= '0;
+            mret_resume_valid_q <= 1'b0;
+            mret_resume_pc_q    <= '0;
+        end else begin
+            if (wfi_commit) begin
+                wfi_resume_pc_q <= rob_head.datapath.pc + 32'd4;
             end
 
-            if (interrupt_take && (interrupt_mcause == MCAUSE_MTI)) begin
-                timer_irq_pending_q <= 1'b0;
-            end else if (timer_irq_rise) begin
-                timer_irq_pending_q <= 1'b1;
+            if (mret_flush_exe) begin
+                mret_resume_valid_q <= 1'b1;
+                mret_resume_pc_q    <= pc_branch_exe;
+            end else if (interrupt_take ||
+                         (pipe_fd_pkt.valid && pipe_fd_pkt.ready)) begin
+                mret_resume_valid_q <= 1'b0;
             end
 
-            if (interrupt_take && (interrupt_mcause == MCAUSE_MEI)) begin
-                external_irq_pending_q <= 1'b0;
-            end else if (external_irq_rise) begin
-                external_irq_pending_q <= 1'b1;
+            if (wfi_sleep_q) begin
+                if (wfi_wake_request) begin
+                    wfi_sleep_q <= 1'b0;
+                end
+            end else if (wfi_commit && !wfi_wake_request) begin
+                wfi_sleep_q <= 1'b1;
             end
         end
     end
@@ -634,7 +708,10 @@ module top_packet_backend #(
     assign branch_pending_q = |active_checkpoint_mask_q;
 
     fetch_packet_stage #(
+        .BASE_ADDR(IMEM_BASE_ADDR),
         .DEPTH_BYTES(IMEM_DEPTH_BYTES),
+        .ENABLE_ACCESS_FAULTS(ENABLE_ACCESS_FAULTS),
+        .ENABLE_PMP(ENABLE_PMP),
         .ENABLE_2WIDE(ENABLE_2WIDE)
     ) u_fetch (
         .load_en(load_en),
@@ -647,6 +724,9 @@ module top_packet_backend #(
         .bp_update_taken(bp_update_taken_exe),
         .bp_update_is_jalr(bp_update_is_jalr_exe),
         .bp_update_target(bp_update_target_exe),
+        .current_privilege(csr_privilege_mode),
+        .pmpcfg_values(csr_pmpcfg_values),
+        .pmpaddr_values(csr_pmpaddr_values),
         .out_if(pipe_fd_pkt.producer)
     );
 
@@ -674,14 +754,19 @@ module top_packet_backend #(
     rename_packet_stage u_rename_packet (
         .flush(flush_exe),
         .restore_rat(recover_rat_exe),
+        .restore_committed(architectural_flush),
         .restore_checkpoint_id(resolve_checkpoint_id_exe),
         .active_checkpoint_mask(active_checkpoint_mask_q),
         .in_if(pipe_dr_pkt_s.consumer),
         .out_if(pipe_rd_pkt.producer),
         .retire_valid({retire_valid1, retire_valid}),
         .retire_is_fp(retire_is_fp),
+        .retire_areg0(rob_head.datapath.rd),
+        .retire_areg1(rob_head1.datapath.rd),
         .retire_preg0(retire_preg),
-        .retire_preg1(retire_preg1)
+        .retire_preg1(retire_preg1),
+        .retire_new_preg0(rob_head.datapath.new_des_preg),
+        .retire_new_preg1(rob_head1.datapath.new_des_preg)
     );
 
     skid_buffer_pipe #(
@@ -701,7 +786,8 @@ module top_packet_backend #(
     dispatch_packet_stage #(
         .ENABLE_2WIDE(ENABLE_2WIDE)
     ) u_dispatch_packet (
-        .flush(1'b0),
+        .halt(wfi_sleep_q),
+        .flush(architectural_flush),
         .squash_en(recover_rat_exe),
         .squash_checkpoint_id(resolve_checkpoint_id_exe),
         .resolve_en(branch_resolve_exe),
@@ -732,13 +818,22 @@ module top_packet_backend #(
         .complete_tag(complete_tag),
         .complete_result(complete_result),
         .complete_fp_flags(complete_fp_flags),
+        .complete_exception_valid(complete_exception_valid),
+        .complete_exception_cause(complete_exception_cause),
+        .complete_exception_tval(complete_exception_tval),
         .branch_complete_valid(branch_complete_valid),
         .branch_complete_tag(branch_complete_tag),
         .branch_complete_result(branch_complete_result),
+        .branch_complete_exception_valid(branch_complete_exception_valid),
+        .branch_complete_exception_cause(branch_complete_exception_cause),
+        .branch_complete_exception_tval(branch_complete_exception_tval),
         .lane1_complete_valid(lane1_complete_valid),
         .lane1_complete_tag(lane1_complete_tag),
         .lane1_complete_result(lane1_complete_result),
         .lane1_complete_fp_flags(lane1_complete_fp_flags),
+        .lane1_complete_exception_valid(lane1_complete_exception_valid),
+        .lane1_complete_exception_cause(lane1_complete_exception_cause),
+        .lane1_complete_exception_tval(lane1_complete_exception_tval),
         .commit_en0(commit_en),
         .commit_en1(commit_en1),
         .in_if(pipe_rd_pkt_d.consumer),
@@ -906,7 +1001,12 @@ module top_packet_backend #(
     );
 
     execution_stage #(
-        .MEM_WORDS(DMEM_WORDS)
+        .MEM_WORDS(DMEM_WORDS),
+        .DATA_BASE_ADDR(DMEM_BASE_ADDR),
+        .ENABLE_DATA_ACCESS_FAULTS(ENABLE_ACCESS_FAULTS),
+        .ENABLE_PMP(ENABLE_PMP),
+        .PRECISE_SYSTEM_EXCEPTIONS(1'b1),
+        .RESET_FS_INITIAL(RESET_FS_INITIAL)
     ) u_execution (
         .in_if(issue_if.consumer),
         .in1_if(issue1_if.consumer),
@@ -916,6 +1016,10 @@ module top_packet_backend #(
         .interrupt_take(interrupt_take),
         .interrupt_mepc(interrupt_mepc),
         .interrupt_mcause(interrupt_mcause),
+        .commit_trap_en(trap_commit),
+        .commit_trap_mepc(rob_head.datapath.pc),
+        .commit_trap_mcause(rob_head.datapath.exception_cause),
+        .commit_trap_mtval(rob_head.datapath.exception_tval),
         .fp_frm_value(fp_frm),
         .fp_csr_rdata(fp_csr_rdata),
         .fp_state_dirty(fp_state_dirty_commit),
@@ -937,13 +1041,22 @@ module top_packet_backend #(
         .complete_tag(complete_tag),
         .complete_result(complete_result),
         .complete_fp_flags(complete_fp_flags),
+        .complete_exception_valid(complete_exception_valid),
+        .complete_exception_cause(complete_exception_cause),
+        .complete_exception_tval(complete_exception_tval),
         .branch_complete_valid(branch_complete_valid),
         .branch_complete_tag(branch_complete_tag),
         .branch_complete_result(branch_complete_result),
+        .branch_complete_exception_valid(branch_complete_exception_valid),
+        .branch_complete_exception_cause(branch_complete_exception_cause),
+        .branch_complete_exception_tval(branch_complete_exception_tval),
         .lane1_complete_valid(lane1_complete_valid),
         .lane1_complete_tag(lane1_complete_tag),
         .lane1_complete_result(lane1_complete_result),
         .lane1_complete_fp_flags(lane1_complete_fp_flags),
+        .lane1_complete_exception_valid(lane1_complete_exception_valid),
+        .lane1_complete_exception_cause(lane1_complete_exception_cause),
+        .lane1_complete_exception_tval(lane1_complete_exception_tval),
         .resolve_checkpoint_id(resolve_checkpoint_id_exe),
         .bp_update_valid(bp_update_valid_exe),
         .bp_update_pc(bp_update_pc_exe),
@@ -953,11 +1066,18 @@ module top_packet_backend #(
         .pc_src(pc_src_exe),
         .pc_branch(pc_branch_exe),
         .recover_rat(recover_rat_exe),
+        .mret_flush(mret_flush_exe),
         .csr_mstatus_value(csr_mstatus_value),
         .csr_mie_value(csr_mie_value),
+        .csr_privilege_mode(csr_privilege_mode),
+        .csr_pmpcfg0_value(csr_pmpcfg0_value),
+        .csr_pmpaddr0_value(csr_pmpaddr0_value),
+        .csr_pmpcfg_values(csr_pmpcfg_values),
+        .csr_pmpaddr_values(csr_pmpaddr_values),
         .fp_csr_write_en(fp_csr_write_en),
         .fp_csr_write_addr(fp_csr_write_addr),
         .fp_csr_write_data(fp_csr_write_data),
+        .memory_quiescent(memory_quiescent),
         .branch_resolve(branch_resolve_exe)
     );
 
@@ -969,5 +1089,39 @@ module top_packet_backend #(
     assign rob_head_valid    = rob_head_valid_i;
     assign rob_head_complete = rob_head_complete_i;
     assign rob_head_rd       = rob_head.datapath.rd;
+
+`ifndef SYNTHESIS
+    always_ff @(posedge clk) begin
+        if (rst_n === 1'b1) begin
+            assert (!commit_en ||
+                    (rob_head.control_signal.store ==
+                     ((rob_head.datapath.instr[6:0] == 7'b0100011) ||
+                      (rob_head.datapath.instr[6:0] == 7'b0100111))))
+                else $error("[ASSERT:TOP] lane0 ROB store metadata disagrees with opcode");
+            assert (!commit_en1 ||
+                    (rob_head1.control_signal.store ==
+                     ((rob_head1.datapath.instr[6:0] == 7'b0100011) ||
+                      (rob_head1.datapath.instr[6:0] == 7'b0100111))))
+                else $error("[ASSERT:TOP] lane1 ROB store metadata disagrees with opcode");
+            assert (!trap_commit || !commit_en)
+                else $error("[ASSERT:TOP] exceptional ROB head retired normally");
+            assert (!(trap_commit && interrupt_take))
+                else $error("[ASSERT:TOP] synchronous exception and interrupt taken together");
+            assert (!(commit_en && interrupt_take))
+                else $error("[ASSERT:TOP] normal retirement and interrupt taken together");
+            assert (!interrupt_take || !rob_head_valid_i || !rob_head_complete_i)
+                else $error("[ASSERT:TOP] interrupt flushed a completed ROB head");
+            assert (!interrupt_take || !rob_head_valid_i ||
+                    (interrupt_mepc == rob_head.datapath.pc))
+                else $error("[ASSERT:TOP] non-empty ROB interrupt restart PC is not the head PC");
+            assert (!commit_en1 || !rob_head1.datapath.exception_valid)
+                else $error("[ASSERT:TOP] exceptional lane1 ROB entry retired normally");
+            assert (!wfi_sleep_q || !commit_en)
+                else $error("[ASSERT:TOP] instruction retired while WFI was asleep");
+            assert (!wfi_sleep_q || !pipe_rd_pkt_d.ready)
+                else $error("[ASSERT:TOP] dispatch accepted work while WFI was asleep");
+        end
+    end
+`endif
 
 endmodule

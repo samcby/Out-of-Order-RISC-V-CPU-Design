@@ -14,11 +14,17 @@ module tb_rename_packet_stage;
     logic rst_n;
     logic flush;
     logic restore_rat;
+    logic restore_committed;
     cp_id_t restore_checkpoint_id;
     cp_mask_t active_checkpoint_mask;
     logic [1:0] retire_valid;
+    logic [1:0] retire_is_fp;
+    areg_t retire_areg0;
+    areg_t retire_areg1;
     preg_t retire_preg0;
     preg_t retire_preg1;
+    preg_t retire_new_preg0;
+    preg_t retire_new_preg1;
 
     pip_if #(decode_rat_packet_t) in_if  (.clk(clk), .rst_n(rst_n));
     pip_if #(rat_dis_packet_t)    out_if (.clk(clk), .rst_n(rst_n));
@@ -26,13 +32,19 @@ module tb_rename_packet_stage;
     rename_packet_stage dut (
         .flush(flush),
         .restore_rat(restore_rat),
+        .restore_committed(restore_committed),
         .restore_checkpoint_id(restore_checkpoint_id),
         .active_checkpoint_mask(active_checkpoint_mask),
         .in_if(in_if.consumer),
         .out_if(out_if.producer),
         .retire_valid(retire_valid),
+        .retire_is_fp(retire_is_fp),
+        .retire_areg0(retire_areg0),
+        .retire_areg1(retire_areg1),
         .retire_preg0(retire_preg0),
-        .retire_preg1(retire_preg1)
+        .retire_preg1(retire_preg1),
+        .retire_new_preg0(retire_new_preg0),
+        .retire_new_preg1(retire_new_preg1)
     );
 
     initial clk = 1'b0;
@@ -108,11 +120,17 @@ module tb_rename_packet_stage;
         rst_n = 1'b0;
         flush = 1'b0;
         restore_rat = 1'b0;
+        restore_committed = 1'b0;
         restore_checkpoint_id = '0;
         active_checkpoint_mask = '0;
         retire_valid = 2'b00;
+        retire_is_fp = 2'b00;
+        retire_areg0 = '0;
+        retire_areg1 = '0;
         retire_preg0 = '0;
         retire_preg1 = '0;
+        retire_new_preg0 = '0;
+        retire_new_preg1 = '0;
         in_if.valid = 1'b0;
         in_if.data = '0;
         out_if.ready = 1'b0;
@@ -229,6 +247,98 @@ module tb_rename_packet_stage;
                  "lane1 branch restore preserves older lane0 rename");
         check_ok(out_if.data.lane0.data.rs_entry.datapath.src_reg_2p == preg_t'(33),
                  "lane1 branch restore preserves branch link rename");
+
+        // Architectural recovery must keep retired state while discarding all
+        // younger speculative mappings and allocations.
+        in_if.valid = 1'b0;
+        rst_n = 1'b0;
+        step_clk;
+        rst_n = 1'b1;
+        step_clk;
+
+        in_if.valid = 1'b1;
+        set_alu_lane(in_if.data.lane0, 1'b1, 32'h0000_0080,
+                     areg_t'(0), areg_t'(0), areg_t'(10), 1'b1);
+        in_if.data.lane1 = '0;
+        #1;
+        check_ok(out_if.data.lane0.data.rs_entry.datapath.new_des_preg == preg_t'(32),
+                 "committed-map test allocates p32 for x10");
+        step_clk;
+
+        in_if.valid = 1'b0;
+        retire_valid = 2'b01;
+        retire_areg0 = areg_t'(10);
+        retire_preg0 = preg_t'(10);
+        retire_new_preg0 = preg_t'(32);
+        step_clk;
+        retire_valid = 2'b00;
+
+        in_if.valid = 1'b1;
+        set_alu_lane(in_if.data.lane0, 1'b1, 32'h0000_0084,
+                     areg_t'(0), areg_t'(0), areg_t'(10), 1'b1);
+        set_alu_lane(in_if.data.lane1, 1'b1, 32'h0000_0088,
+                     areg_t'(0), areg_t'(0), areg_t'(11), 1'b1);
+        #1;
+        check_ok(out_if.data.lane0.data.rs_entry.datapath.new_des_preg == preg_t'(33) &&
+                 out_if.data.lane1.data.rs_entry.datapath.new_des_preg == preg_t'(34),
+                 "younger speculative packet consumes p33 and p34");
+        step_clk;
+
+        in_if.valid = 1'b0;
+        restore_committed = 1'b1;
+        step_clk;
+        restore_committed = 1'b0;
+
+        in_if.valid = 1'b1;
+        set_alu_lane(in_if.data.lane0, 1'b1, 32'h0000_008c,
+                     areg_t'(10), areg_t'(11), areg_t'(0), 1'b0);
+        in_if.data.lane1 = '0;
+        #1;
+        check_ok(out_if.data.lane0.data.rs_entry.datapath.src_reg_1p == preg_t'(32),
+                 "architectural restore preserves retired x10 mapping");
+        check_ok(out_if.data.lane0.data.rs_entry.datapath.src_reg_2p == preg_t'(11),
+                 "architectural restore removes younger x11 mapping");
+
+        set_alu_lane(in_if.data.lane0, 1'b1, 32'h0000_0090,
+                     areg_t'(0), areg_t'(0), areg_t'(12), 1'b1);
+        #1;
+        check_ok(out_if.data.lane0.data.rs_entry.datapath.new_des_preg == preg_t'(33),
+                 "architectural restore rebuilds free pool from committed RAT");
+
+        in_if.valid = 1'b0;
+        rst_n = 1'b0;
+        step_clk;
+        rst_n = 1'b1;
+        step_clk;
+
+        in_if.valid = 1'b1;
+        set_alu_lane(in_if.data.lane0, 1'b1, 32'h0000_0094,
+                     areg_t'(0), areg_t'(0), areg_t'(9), 1'b1);
+        set_alu_lane(in_if.data.lane1, 1'b1, 32'h0000_0098,
+                     areg_t'(0), areg_t'(0), areg_t'(9), 1'b1);
+        step_clk;
+
+        in_if.valid = 1'b0;
+        retire_valid = 2'b11;
+        retire_areg0 = areg_t'(9);
+        retire_areg1 = areg_t'(9);
+        retire_preg0 = preg_t'(9);
+        retire_preg1 = preg_t'(32);
+        retire_new_preg0 = preg_t'(32);
+        retire_new_preg1 = preg_t'(33);
+        step_clk;
+        retire_valid = 2'b00;
+
+        restore_committed = 1'b1;
+        step_clk;
+        restore_committed = 1'b0;
+        in_if.valid = 1'b1;
+        set_alu_lane(in_if.data.lane0, 1'b1, 32'h0000_009c,
+                     areg_t'(9), areg_t'(0), areg_t'(0), 1'b0);
+        in_if.data.lane1 = '0;
+        #1;
+        check_ok(out_if.data.lane0.data.rs_entry.datapath.src_reg_1p == preg_t'(33),
+                 "younger lane wins same-cycle WAW committed-map update");
 
         $display("==== tb_rename_packet_stage PASS ====");
         $finish;

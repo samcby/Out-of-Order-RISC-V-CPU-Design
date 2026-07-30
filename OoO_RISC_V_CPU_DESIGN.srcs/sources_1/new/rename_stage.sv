@@ -94,6 +94,9 @@ module rename_stage (
     assign out_if.data.rob_entry.datapath.rd           = in_if.data.datapath.rd;
     assign out_if.data.rob_entry.datapath.complete     = 1'b0;
     assign out_if.data.rob_entry.datapath.result       = '0;
+    assign out_if.data.rob_entry.datapath.exception_valid = 1'b0;
+    assign out_if.data.rob_entry.datapath.exception_cause = '0;
+    assign out_if.data.rob_entry.datapath.exception_tval  = '0;
 
     reg_alias_table u_rat (
         .clk        (in_if.clk),

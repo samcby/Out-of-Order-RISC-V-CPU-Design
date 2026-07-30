@@ -57,6 +57,7 @@ module tb_dispatch_packet_stage_dual_issue;
     pip_if #(issue_exe_t) issue1_if (.clk(clk), .rst_n(rst_n));
 
     dispatch_packet_stage dut (
+        .halt(1'b0),
         .lane0_src1_ready(lane0_src1_ready),
         .lane0_src2_ready(lane0_src2_ready),
         .lane0_src1_value(lane0_src1_value),
@@ -272,11 +273,11 @@ module tb_dispatch_packet_stage_dual_issue;
         dispatch_pair(FU_ALU, FU_MEM, rob_tag_t'(1), rob_tag_t'(2));
         check_ok(issue0_if.valid, "ALU/MEM packet asserts issue lane0");
         check_ok(issue1_if.valid, "ALU/MEM packet asserts issue lane1");
-        check_ok(issue0_if.data.fu_sel == FU_MEM, "ALU/MEM places MEM on lane0");
-        check_ok(issue1_if.data.fu_sel == FU_ALU, "ALU/MEM places ALU on lane1");
-        check_ok(issue0_if.data.datapath.rob_tag == rob_tag_t'(2), "ALU/MEM lane0 MEM tag preserved");
-        check_ok(issue1_if.data.datapath.rob_tag == rob_tag_t'(1), "ALU/MEM lane1 ALU tag preserved");
-        complete_and_drain_pair(rob_tag_t'(2), rob_tag_t'(1));
+        check_ok(issue0_if.data.fu_sel == FU_ALU, "ALU/MEM keeps ready ALU on lane0");
+        check_ok(issue1_if.data.fu_sel == FU_MEM, "ALU/MEM places potentially blocking MEM on lane1");
+        check_ok(issue0_if.data.datapath.rob_tag == rob_tag_t'(1), "ALU/MEM lane0 ALU tag preserved");
+        check_ok(issue1_if.data.datapath.rob_tag == rob_tag_t'(2), "ALU/MEM lane1 MEM tag preserved");
+        complete_and_drain_pair(rob_tag_t'(1), rob_tag_t'(2));
 
         dispatch_pair(FU_BRANCH, FU_ALU, rob_tag_t'(3), rob_tag_t'(4));
         check_ok(issue0_if.valid, "BR/ALU packet asserts issue lane0");

@@ -12,7 +12,10 @@
 // under downstream backpressure according to the pip_if contract.
 module fetch_packet_stage #(
     parameter int WIDTH = 32,
+    parameter logic [WIDTH-1:0] BASE_ADDR = '0,
     parameter int DEPTH_BYTES = 4096,
+    parameter bit ENABLE_ACCESS_FAULTS = 1'b0,
+    parameter bit ENABLE_PMP = 1'b0,
     parameter bit ENABLE_2WIDE = 1'b1
 )(
     input  logic             load_en,
@@ -26,6 +29,9 @@ module fetch_packet_stage #(
     input  logic             bp_update_taken,
     input  logic             bp_update_is_jalr,
     input  logic [WIDTH-1:0] bp_update_target,
+    input  logic [1:0]       current_privilege,
+    input  logic [defines_pkg::PMP_ENTRY_COUNT*8-1:0] pmpcfg_values,
+    input  logic [defines_pkg::PMP_ENTRY_COUNT*WIDTH-1:0] pmpaddr_values,
 
     pip_if.producer out_if
 );
@@ -54,6 +60,12 @@ module fetch_packet_stage #(
     logic [WIDTH-1:0] lane1_pc;
     logic [WIDTH-1:0] lane0_instr;
     logic [WIDTH-1:0] lane1_instr;
+    logic [WIDTH-1:0] lane0_mem_offset;
+    logic [WIDTH-1:0] lane1_mem_offset;
+    logic lane0_access_fault;
+    logic lane1_access_fault;
+    logic lane0_pmp_allowed;
+    logic lane1_pmp_allowed;
 
     logic [WORD_AW-1:0] load_word_idx;
     logic [WORD_AW-1:0] lane0_word_idx;
@@ -115,10 +127,32 @@ module fetch_packet_stage #(
                             pc_q;
     assign lane0_pc       = fetch_pc;
     assign lane1_pc       = fetch_pc + WIDTH'(32'd4);
-    assign lane0_word_idx = lane0_pc[WORD_AW+1:2];
-    assign lane1_word_idx = lane1_pc[WORD_AW+1:2];
-    assign lane0_instr    = start_q ? mem[lane0_word_idx] : '0;
-    assign lane1_instr    = start_q ? mem[lane1_word_idx] : '0;
+    assign lane0_mem_offset = lane0_pc - BASE_ADDR;
+    assign lane1_mem_offset = lane1_pc - BASE_ADDR;
+    assign lane0_word_idx = lane0_mem_offset[WORD_AW+1:2];
+    assign lane1_word_idx = lane1_mem_offset[WORD_AW+1:2];
+    assign lane0_pmp_allowed = pmp_access_allowed(
+        current_privilege, pmpcfg_values, pmpaddr_values, lane0_pc,
+        3'd3, 1'b0, 1'b0, 1'b1);
+    assign lane1_pmp_allowed = pmp_access_allowed(
+        current_privilege, pmpcfg_values, pmpaddr_values, lane1_pc,
+        3'd3, 1'b0, 1'b0, 1'b1);
+    assign lane0_access_fault =
+        (ENABLE_ACCESS_FAULTS &&
+         ((lane0_pc < BASE_ADDR) ||
+          ({1'b0, lane0_pc} + 33'd3 >=
+           ({1'b0, BASE_ADDR} + DEPTH_BYTES)))) ||
+        (ENABLE_PMP && !lane0_pmp_allowed);
+    assign lane1_access_fault =
+        (ENABLE_ACCESS_FAULTS &&
+         ((lane1_pc < BASE_ADDR) ||
+          ({1'b0, lane1_pc} + 33'd3 >=
+           ({1'b0, BASE_ADDR} + DEPTH_BYTES)))) ||
+        (ENABLE_PMP && !lane1_pmp_allowed);
+    assign lane0_instr = (start_q && !lane0_access_fault) ?
+                         mem[lane0_word_idx] : '0;
+    assign lane1_instr = (start_q && !lane1_access_fault) ?
+                         mem[lane1_word_idx] : '0;
 
     assign lane0_opcode = lane0_instr[6:0];
     assign lane1_opcode = lane1_instr[6:0];
@@ -215,7 +249,9 @@ module fetch_packet_stage #(
 
     // A lane1 control-flow instruction is the youngest instruction in the
     // packet, so it can redirect without invalidating lane0.
-    assign lane1_valid = ENABLE_2WIDE && !lane0_is_control;
+    assign lane1_valid = ENABLE_2WIDE &&
+                         !lane0_is_control &&
+                         !lane0_access_fault;
 
     always_comb begin
         pred_taken = 1'b0;
@@ -242,12 +278,18 @@ module fetch_packet_stage #(
         out_if.data.lane0.data.instr = lane0_instr;
         out_if.data.lane0.data.pred_taken = lane0_pred_taken;
         out_if.data.lane0.data.pred_target = lane0_pred_target;
+        out_if.data.lane0.data.exception_valid = lane0_access_fault;
+        out_if.data.lane0.data.exception_cause = MCAUSE_INSTR_ACCESS_FAULT;
+        out_if.data.lane0.data.exception_tval = lane0_pc;
 
         out_if.data.lane1.valid = out_if.valid && lane1_valid;
         out_if.data.lane1.data.pc = lane1_pc;
         out_if.data.lane1.data.instr = lane1_instr;
         out_if.data.lane1.data.pred_taken = lane1_pred_taken;
         out_if.data.lane1.data.pred_target = lane1_pred_target;
+        out_if.data.lane1.data.exception_valid = lane1_access_fault;
+        out_if.data.lane1.data.exception_cause = MCAUSE_INSTR_ACCESS_FAULT;
+        out_if.data.lane1.data.exception_tval = lane1_pc;
     end
 
     assign fetch_fire = out_if.valid && out_if.ready;

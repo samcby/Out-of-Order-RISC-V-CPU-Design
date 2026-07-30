@@ -26,8 +26,8 @@ Status definitions:
 | `SLLI`, `SRLI`, `SRAI` | Covered | `tb_top_packet_backend_rv32i_smoke`, `tb_top_packet_backend_25test` | Logical and arithmetic shifts |
 | `ADD`, `SUB`, `SLL`, `SLT`, `SLTU` | Covered | `tb_top_packet_backend_rv32i_smoke`, `tb_top_packet_backend_long_stress` | Integrated OoO execution |
 | `XOR`, `SRL`, `SRA`, `OR`, `AND` | Covered | `tb_top_packet_backend_rv32i_smoke`, `tb_top_packet_backend_25test` | Integrated OoO execution |
-| `FENCE` | Partial | decode and RV32I smoke path | Treated as a no-op; ordering semantics are not implemented |
-| `FENCE.I` | Gap | none | No instruction-cache synchronization mechanism |
+| `FENCE` | Covered | `tb_top_packet_backend_fence_smoke` | Serialized after older retirement and LSU/cache drain |
+| `FENCE.I` | Covered | `tb_top_packet_backend_fence_smoke` | Same serialization rule; no I-cache invalidation is required because this core has no I-cache |
 
 ## RV32F Instructions
 
@@ -46,7 +46,7 @@ Status definitions:
 | `FMV.X.W`, `FMV.W.X`, `FCLASS.S` | Covered | `tb_fp_simple_unit`, `tb_top_packet_backend_fp_simple_smoke` | Raw bit moves and classification |
 | Dynamic rounding through `frm` | Covered | `tb_top_packet_backend_fp_add_sub_smoke`, `tb_fp_softfloat_diff` | `rm=111` path |
 | `fflags`, `frm`, `fcsr` | Covered | `tb_fp_infrastructure_smoke`, `tb_top_packet_backend_fp_flags_smoke` | Sticky and precise retirement updates |
-| `mstatus.FS=Off` enforcement | Gap | none | Software-visible FS state exists, but disabled-state traps are not enforced |
+| `mstatus.FS=Off` enforcement | Covered | `tb_top_packet_backend_fp_fs_smoke` | Default-Off reset, both issue slots, arithmetic/move, FLW, FSW, and FP CSR accesses trap precisely with no FP or memory side effects |
 
 ## CSR, Exceptions, and Interrupts
 
@@ -54,20 +54,30 @@ Status definitions:
 | --- | --- | --- | --- |
 | `CSRRW`, `CSRRS`, `CSRRC` | Covered | `tb_top_csr_smoke` | Read/modify/write behavior |
 | `CSRRWI`, `CSRRSI`, `CSRRCI` | Covered | `tb_top_csr_smoke` | Immediate forms and old-value return |
-| Illegal CSR access | Covered | `tb_top_csr_illegal_smoke` | `mcause=2`, instruction in `mtval` |
-| `ECALL` and `MRET` | Covered | `tb_top_packet_backend_trap_smoke`, `tb_top_trap_smoke` | Precise entry, handler, and return |
+| Illegal CSR access | Covered | `tb_top_csr_illegal_smoke`, `tb_top_packet_backend_privilege_smoke` | Unimplemented and insufficient-privilege accesses report `mcause=2` with the instruction in `mtval` |
+| U/M privilege transitions | Covered | `tb_top_packet_backend_privilege_smoke` | M-mode bootstrap, `MRET` entry to U-mode, trap entry to M-mode, and return to U-mode |
+| U-mode and M-mode `ECALL` | Covered | `tb_top_packet_backend_privilege_smoke`, `tb_top_packet_backend_trap_smoke` | Causes 8 and 11 respectively |
+| Privileged `MRET` behavior | Covered | `tb_top_packet_backend_privilege_smoke`, `tb_top_packet_backend_trap_smoke` | U-mode `MRET` is illegal; legal return flushes younger frontend, queues, branch pipeline, LSU, and FP work |
+| PMP CSR WARL and Lock behavior | Covered | `tb_top_packet_backend_pmp_smoke` | `pmpcfg0`-`pmpcfg3`, `pmpaddr0`-`pmpaddr15`, per-entry Lock, and locked-TOR predecessor locking |
+| U-mode PMP instruction/load/store permissions | Covered | `tb_top_packet_backend_pmp_smoke` | X, R, and W denial generate precise causes 1, 5, and 7 with the fault address in `mtval` |
+| M-mode PMP enforcement | Covered | `tb_top_packet_backend_pmp_smoke` | Unlocked restrictive entries are bypassed, locked permissions are enforced, and partial matches still fault |
+| `mstatus.MPRV` effective privilege | Covered | `tb_top_packet_backend_pmp_smoke` | M-mode load/store PMP checks use `MPP` while instruction fetch remains at the current privilege |
+| Multi-entry PMP priority and address modes | Covered | `tb_top_packet_backend_pmp_smoke` | Sixteen entries, OFF/TOR/NA4/NAPOT, entry15 end-to-end access, lowest-numbered priority, and partial-overlap failure |
 | `EBREAK` | Partial | decode/trap RTL | No dedicated end-to-end breakpoint test remains |
 | Illegal instruction | Covered | `tb_top_illegal_smoke` | `mepc`, `mcause`, and `mtval` |
 | Instruction/load/store address misaligned | Covered | `tb_top_misaligned_smoke` | All three causes and fault address |
-| Instruction/load/store access fault | Gap | none | No protection or bus-fault model |
+| Instruction/load/store access fault | Covered | `tb_top_packet_backend_access_fault_smoke` | Configured instruction and data windows, precise `mepc`/`mcause`/`mtval` |
 | `mtvec` direct and vectored modes | Covered | `tb_top_mtvec_mode_smoke` | Exception base and interrupt vector |
-| Trap-entry `MIE/MPIE/MPP` and `MRET` restore | Covered | `tb_top_packet_backend_trap_smoke`, `tb_top_packet_backend_interrupt_smoke` | Entry and return state checked |
+| Trap-entry `MIE/MPIE/MPP` and `MRET` restore | Covered | `tb_top_packet_backend_privilege_smoke`, `tb_top_packet_backend_trap_smoke`, `tb_top_packet_backend_interrupt_smoke` | Entry, previous privilege, and return state checked |
 | Machine software interrupt | Covered | `tb_top_interrupt_sources_smoke` | Cause, enable, entry, return |
 | Machine timer interrupt | Covered | `tb_top_interrupt_sources_smoke` | Cause, enable, entry, return |
 | Machine external interrupt | Covered | `tb_top_packet_backend_interrupt_smoke` | End-to-end handler path |
+| Level-sensitive interrupt pending/retrigger | Covered | `tb_top_packet_backend_wfi_level_irq_smoke` | A held external source remains pending across trap entry and retriggers after `MRET`; deassertion clears `mip` |
 | Interrupt priority: external > software > timer | Covered | `tb_top_interrupt_sources_smoke` | Simultaneous pending sources |
-| Nested interrupts | Gap | none | Current entry policy waits for a safe ROB-empty boundary |
-| Exception versus interrupt arbitration | Partial | trap and interrupt smokes | Each path is checked independently, not in the same cycle |
+| Precise interrupt with non-empty ROB | Covered | `tb_top_packet_backend_precise_interrupt_smoke` | Interrupts an incomplete cache-miss load, checks head-PC `mepc`, flush, `MRET` replay, and exactly-once handler state |
+| Nested interrupts | Covered | `tb_top_packet_backend_nested_interrupt_smoke` | External interrupt nests a software interrupt after the outer handler saves context and reenables `MIE`; both `MRET` paths and restored trap state are checked |
+| Exception versus interrupt arbitration | Covered | `tb_top_packet_backend_exception_interrupt_priority` | Synchronous exception wins over a simultaneously pending interrupt |
+| `WFI` sleep and wakeup | Covered | `tb_top_packet_backend_wfi_level_irq_smoke` | No retirement while asleep; globally enabled source wakes and traps; locally enabled source with `MIE=0` wakes without a trap |
 
 ## Multi-Issue and Recovery
 

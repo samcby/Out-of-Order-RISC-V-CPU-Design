@@ -9,10 +9,11 @@
 //
 // Store-buffer and pending-load entries retain speculation masks. Branch squash
 // removes wrong-path uncommitted stores and pending loads; correct resolve clears
-// a mask bit. The commit replay bookkeeping handles the corner case in which a
-// Store's ROB commit tag arrives in the same cycle as its buffer allocation.
+// a mask bit. A commit may match a resident store or the store accepted in the
+// same cycle; unmatched commit tags are deliberately not retained.
 module lsu #(
     parameter int MEM_WORDS = 256,
+    parameter logic [defines_pkg::WIDTH-1:0] DATA_BASE_ADDR = '0,
     parameter int DATA_CACHE_LINES = 8,
     parameter int DATA_CACHE_WAYS = 2,
     parameter int DATA_CACHE_WORDS_PER_LINE = 4,
@@ -22,6 +23,7 @@ module lsu #(
     input  logic                           rst_n,
     input  logic                           req_valid,
     output logic                           req_ready,
+    input  logic                           flush,
     input  logic                           squash_en,
     input  defines_pkg::cp_id_t            squash_checkpoint_id,
     input  logic                           resolve_en,
@@ -37,7 +39,8 @@ module lsu #(
     output defines_pkg::preg_t             resp_preg,
     output logic                           resp_reg_write,
     output logic                           resp_dest_is_fp,
-    output logic [defines_pkg::WIDTH-1:0]  resp_result
+    output logic [defines_pkg::WIDTH-1:0]  resp_result,
+    output logic                           idle
 );
     import defines_pkg::*;
 
@@ -45,10 +48,6 @@ module lsu #(
     localparam int STORE_BUF_DEPTH = 8;
     localparam int STORE_BUF_IDX_W = $clog2(STORE_BUF_DEPTH);
     localparam int STORE_BUF_AGE_W = 16;
-    localparam int COMMIT_REPLAY_DEPTH = 4;
-    localparam int COMMIT_REPLAY_IDX_W = $clog2(COMMIT_REPLAY_DEPTH);
-    localparam int COMMIT_REPLAY_AGE_W = 4;
-    localparam int COMMIT_TAG_COUNT = (1 << ROB_TAG_W);
 
     logic             pending_valid;
     logic             pending_mem_req_sent;
@@ -94,21 +93,12 @@ module lsu #(
     logic             store_alloc_valid;
     logic             store_alloc_commit_match;
     logic             store_commit_match [0:STORE_BUF_DEPTH-1];
-    logic             store_commit_hit0;
-    logic             store_commit_hit1;
     logic             store_buf_squashed [0:STORE_BUF_DEPTH-1];
     cp_mask_t         store_buf_spec_mask_next [0:STORE_BUF_DEPTH-1];
-    logic             commit_replay_valid [0:COMMIT_REPLAY_DEPTH-1];
-    rob_tag_t         commit_replay_tag [0:COMMIT_REPLAY_DEPTH-1];
-    logic [COMMIT_REPLAY_AGE_W-1:0] commit_replay_age [0:COMMIT_REPLAY_DEPTH-1];
-    logic [COMMIT_REPLAY_IDX_W-1:0] commit_replay_ptr_q;
-    logic [COMMIT_REPLAY_IDX_W-1:0] commit_replay_idx1;
-    logic             commit_replay_hit;
-    logic             commit_seen_valid [0:COMMIT_TAG_COUNT-1];
-    logic             commit_seen_hit;
     lsu_control_t     active_control;
     rs_datapath_t     active_datapath;
     logic [WIDTH-1:0] active_eff_addr;
+    logic [WIDTH-1:0] active_mem_offset;
     logic             mem_req_valid;
     logic             mem_req_ready;
     logic             mem_resp_valid;
@@ -174,7 +164,8 @@ module lsu #(
         resolve_en ? (pending_datapath.speculation_mask & ~(cp_mask_t'(1'b1) << resolve_checkpoint_id)) :
                      pending_datapath.speculation_mask;
     assign pending_squashed =
-        squash_en && pending_datapath.speculation_mask[squash_checkpoint_id];
+        (flush === 1'b1) ||
+        (squash_en && pending_datapath.speculation_mask[squash_checkpoint_id]);
 
     // Scan the store buffer once per cycle to find allocation space, commit-tag
     // matches, and the oldest committed store eligible to drain. Age ordering
@@ -187,17 +178,6 @@ module lsu #(
         store_alloc_idx = '0;
         store_drain_valid = 1'b0;
         store_drain_idx = '0;
-        store_commit_hit0 = 1'b0;
-        store_commit_hit1 = 1'b0;
-        commit_replay_hit = 1'b0;
-        commit_seen_hit = commit_seen_valid[datapath.rob_tag];
-
-        for (int i = 0; i < COMMIT_REPLAY_DEPTH; i++) begin
-            if (commit_replay_valid[i] && (commit_replay_tag[i] == datapath.rob_tag)) begin
-                commit_replay_hit = 1'b1;
-            end
-        end
-
         for (int i = 0; i < STORE_BUF_DEPTH; i++) begin
             store_buf_spec_mask_next[i] =
                 resolve_en ? (store_buf_datapath[i].speculation_mask &
@@ -206,29 +186,16 @@ module lsu #(
             store_buf_squashed[i] =
                 store_buf_valid[i] &&
                 !store_buf_committed[i] &&
-                squash_en &&
-                store_buf_datapath[i].speculation_mask[squash_checkpoint_id];
+                ((flush === 1'b1) ||
+                 (squash_en &&
+                  store_buf_datapath[i].speculation_mask[squash_checkpoint_id]));
             store_commit_match[i] =
                 store_buf_valid[i] &&
                 !store_buf_committed[i] &&
-                (commit_seen_valid[store_buf_datapath[i].rob_tag] ||
-                 (commit_store_valid0 &&
-                  (commit_store_tag0 == store_buf_datapath[i].rob_tag)) ||
+                ((commit_store_valid0 &&
+                   (commit_store_tag0 == store_buf_datapath[i].rob_tag)) ||
                  (commit_store_valid1 &&
-                  (commit_store_tag1 == store_buf_datapath[i].rob_tag)));
-            if (store_buf_valid[i] &&
-                !store_buf_committed[i] &&
-                commit_store_valid0 &&
-                (commit_store_tag0 == store_buf_datapath[i].rob_tag)) begin
-                store_commit_hit0 = 1'b1;
-            end
-            if (store_buf_valid[i] &&
-                !store_buf_committed[i] &&
-                commit_store_valid1 &&
-                (commit_store_tag1 == store_buf_datapath[i].rob_tag)) begin
-                store_commit_hit1 = 1'b1;
-            end
-
+                   (commit_store_tag1 == store_buf_datapath[i].rob_tag)));
             if (store_buf_valid[i]) begin
                 store_buf_any_valid = 1'b1;
                 if (!store_buf_squashed[i]) begin
@@ -319,24 +286,22 @@ module lsu #(
     assign pending_store_blocking =
         |(pending_store_dep_mask & store_buf_valid_mask) &&
         !pending_forward_valid;
-    assign commit_replay_idx1 =
-        commit_replay_ptr_q + (commit_store_valid0 && !store_commit_hit0 ? 1'b1 : 1'b0);
     assign store_alloc_commit_match =
         req_valid &&
         req_ready &&
         control_signal.mem_write &&
-        (((commit_store_valid0 && (commit_store_tag0 == datapath.rob_tag)) ||
-          (commit_store_valid1 && (commit_store_tag1 == datapath.rob_tag))) ||
-         commit_replay_hit ||
-         commit_seen_hit);
+        ((commit_store_valid0 && (commit_store_tag0 == datapath.rob_tag)) ||
+         (commit_store_valid1 && (commit_store_tag1 == datapath.rob_tag)));
 
     assign active_control = store_drain_valid ? store_buf_control[store_drain_idx] : pending_control;
     assign active_datapath = store_drain_valid ? store_buf_datapath[store_drain_idx] : pending_datapath;
     assign active_eff_addr = active_datapath.src1_value + active_datapath.imm;
+    assign active_mem_offset = active_eff_addr - DATA_BASE_ADDR;
     assign eff_addr  = active_eff_addr;
-    assign word_addr = active_eff_addr[ADDR_W+1:2];
+    assign word_addr = active_mem_offset[ADDR_W+1:2];
     assign byte_off  = active_eff_addr[1:0];
-    assign req_ready = control_signal.mem_write ?
+    assign req_ready = (flush === 1'b1) ? 1'b0 :
+                       control_signal.mem_write ?
                        (!pending_valid && !resp_valid && store_alloc_valid) :
                        (!pending_valid && !resp_valid);
     // The cache sees either a non-forwarded pending load or the oldest committed
@@ -351,6 +316,12 @@ module lsu #(
         (store_drain_valid &&
          !store_buf_squashed[store_drain_idx] &&
          !store_buf_mem_req_sent[store_drain_idx]));
+    assign idle = !pending_valid &&
+                  !resp_valid &&
+                  !store_buf_any_valid &&
+                  !store_drain_wait_q &&
+                  !mem_req_valid &&
+                  !mem_resp_valid;
     assign curr_word = pending_forward_valid ? pending_forward_word : mem_resp_rdata;
 
     data_cache #(
@@ -440,8 +411,8 @@ module lsu #(
     end
 
     // State transitions: accept new LSU work, consume cache/forward responses,
-    // record commit tags that arrive early, and selectively kill wrong-path
-    // entries. Store visibility is gated exclusively by store_buf_committed.
+    // and selectively kill wrong-path entries. Store visibility is gated
+    // exclusively by store_buf_committed.
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             pending_valid  <= 1'b0;
@@ -449,15 +420,6 @@ module lsu #(
             pending_store_dep_mask <= '0;
             pending_control <= '0;
             pending_datapath <= '0;
-            commit_replay_ptr_q <= '0;
-            for (int i = 0; i < COMMIT_REPLAY_DEPTH; i++) begin
-                commit_replay_valid[i] <= 1'b0;
-                commit_replay_tag[i] <= '0;
-                commit_replay_age[i] <= '0;
-            end
-            for (int i = 0; i < COMMIT_TAG_COUNT; i++) begin
-                commit_seen_valid[i] <= 1'b0;
-            end
             store_age_q <= '0;
             store_drain_wait_q <= 1'b0;
             for (int i = 0; i < STORE_BUF_DEPTH; i++) begin
@@ -482,33 +444,6 @@ module lsu #(
             resp_dest_is_fp <= 1'b0;
             resp_result    <= '0;
             store_drain_wait_q <= 1'b0;
-
-            for (int i = 0; i < COMMIT_REPLAY_DEPTH; i++) begin
-                if (commit_replay_valid[i]) begin
-                    if (&commit_replay_age[i]) begin
-                        commit_replay_valid[i] <= 1'b0;
-                        commit_replay_tag[i] <= '0;
-                        commit_replay_age[i] <= '0;
-                    end else begin
-                        commit_replay_age[i] <= commit_replay_age[i] + 1'b1;
-                    end
-                end
-            end
-
-            if (commit_store_valid0 && !store_commit_hit0) begin
-                commit_seen_valid[commit_store_tag0] <= 1'b1;
-                commit_replay_valid[commit_replay_ptr_q] <= 1'b1;
-                commit_replay_tag[commit_replay_ptr_q] <= commit_store_tag0;
-                commit_replay_age[commit_replay_ptr_q] <= '0;
-                commit_replay_ptr_q <= commit_replay_ptr_q + 1'b1;
-            end
-            if (commit_store_valid1 && !store_commit_hit1) begin
-                commit_seen_valid[commit_store_tag1] <= 1'b1;
-                commit_replay_valid[commit_replay_idx1] <= 1'b1;
-                commit_replay_tag[commit_replay_idx1] <= commit_store_tag1;
-                commit_replay_age[commit_replay_idx1] <= '0;
-                commit_replay_ptr_q <= commit_replay_idx1 + 1'b1;
-            end
 
             if (pending_valid && pending_squashed) begin
                 pending_valid <= 1'b0;
@@ -572,19 +507,6 @@ module lsu #(
                     store_buf_control[store_alloc_idx] <= control_signal;
                     store_buf_datapath[store_alloc_idx] <= datapath;
                     store_age_q <= store_age_q + 1'b1;
-                    if (store_alloc_commit_match) begin
-                        commit_seen_valid[datapath.rob_tag] <= 1'b0;
-                    end
-                    if (commit_replay_hit) begin
-                        for (int i = 0; i < COMMIT_REPLAY_DEPTH; i++) begin
-                            if (commit_replay_valid[i] &&
-                                (commit_replay_tag[i] == datapath.rob_tag)) begin
-                                commit_replay_valid[i] <= 1'b0;
-                                commit_replay_tag[i] <= '0;
-                                commit_replay_age[i] <= '0;
-                            end
-                        end
-                    end
 
                     resp_valid     <= 1'b1;
                     resp_tag       <= datapath.rob_tag;
@@ -616,7 +538,6 @@ module lsu #(
                     end
                     if (store_commit_match[i]) begin
                         store_buf_committed[i] <= 1'b1;
-                        commit_seen_valid[store_buf_datapath[i].rob_tag] <= 1'b0;
                     end
                 end
             end

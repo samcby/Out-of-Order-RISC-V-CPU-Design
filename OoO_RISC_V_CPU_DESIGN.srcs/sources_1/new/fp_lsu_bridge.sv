@@ -77,6 +77,7 @@ module fp_lsu_bridge #(
         .rst_n                 (rst_n),
         .req_valid             (req_valid),
         .req_ready             (req_ready),
+        .flush                 (1'b0),
         .squash_en             (squash_en),
         .squash_checkpoint_id  (squash_checkpoint_id),
         .resolve_en            (resolve_en),

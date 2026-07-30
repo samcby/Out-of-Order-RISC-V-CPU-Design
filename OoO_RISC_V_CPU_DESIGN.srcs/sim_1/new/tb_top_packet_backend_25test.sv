@@ -484,15 +484,13 @@ module tb_top_packet_backend_25test;
 
             for (int i = 0; i < 8; i++) begin
                 if (dut.u_execution.u_lsu.store_buf_valid[i]) begin
-                    $display("[STORE_BUF] idx=%0d committed=%0b sent=%0b squashed=%0b age=%0d tag=%0d commit_seen=%0b pc=%08h instr=%08h addr_base=%08h imm=%08h data=%08h spec=%b",
+                    $display("[STORE_BUF] idx=%0d committed=%0b sent=%0b squashed=%0b age=%0d tag=%0d pc=%08h instr=%08h addr_base=%08h imm=%08h data=%08h spec=%b",
                              i,
                              dut.u_execution.u_lsu.store_buf_committed[i],
                              dut.u_execution.u_lsu.store_buf_mem_req_sent[i],
                              dut.u_execution.u_lsu.store_buf_squashed[i],
                              dut.u_execution.u_lsu.store_buf_age[i],
                              dut.u_execution.u_lsu.store_buf_datapath[i].rob_tag,
-                             dut.u_execution.u_lsu.commit_seen_valid[
-                                 dut.u_execution.u_lsu.store_buf_datapath[i].rob_tag],
                              dut.u_execution.u_lsu.store_buf_datapath[i].pc,
                              dut.u_execution.u_lsu.store_buf_datapath[i].instr,
                              dut.u_execution.u_lsu.store_buf_datapath[i].src1_value,

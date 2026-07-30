@@ -30,12 +30,13 @@ Available groups:
 | `performance` | Controlled 1-wide versus 2-wide IPC comparison |
 | `stress` | Deterministic long-program retirement and architectural-state checking |
 | `softfloat` | Deterministic Berkeley SoftFloat differential vectors |
-| `floating` | RV32F infrastructure, memory transport, and exact FP execution |
+| `floating` | RV32F infrastructure, memory transport, FS gating, and exact FP execution |
 | `full` | Milestone regression before a push or architecture transition |
 
 Every testbench prints its own `PASS` or `FAIL` banner. The Tcl script reports
-launch/runtime errors, while assertion results remain visible in the console.
-The requirement-level evidence and remaining gaps are tracked in
+launch/runtime errors and automatically counts functional FAIL or missing
+banners in the suite summary. The requirement-level evidence and remaining
+gaps are tracked in
 [`VERIFICATION_COVERAGE.md`](VERIFICATION_COVERAGE.md).
 
 ## Floating-Point Infrastructure
@@ -71,6 +72,8 @@ The requirement-level evidence and remaining gaps are tracked in
 - third-source RAT, PRF, RS readiness, and wakeup behavior
 - dynamic rounding through `frm`
 - software-visible `fflags`, `frm`, and `fcsr` CSR accesses
+- production-default `mstatus.FS=Off` enforcement for FP compute, memory, and
+  CSR state with precise illegal-instruction recovery
 - 10,880 SoftFloat differential vectors across all arithmetic rounding modes
 
 The floating group uses `tb_fp_infrastructure_smoke` for decode, PRF, and CSR
@@ -85,6 +88,9 @@ cases, while `tb_top_packet_backend_fp_simple_smoke` executes `FSGNJX.S`,
 `FMV.W.X` through the integrated 2-wide backend.
 `tb_top_packet_backend_fp_flags_smoke` executes a signaling-NaN comparison on
 both a squashed path and a committed path to prove precise `NV` updates.
+`tb_top_packet_backend_fp_fs_smoke` starts from the production-default
+`mstatus.FS=Off` state and proves that FP compute, FLW, FSW, and FP CSR accesses
+trap precisely without changing the FP register file, FP CSRs, or memory.
 `tb_fp_add_sub_unit` covers finite arithmetic, cancellation, ties, directed
 rounding, overflow, NaN, infinity, and subnormal cases.
 `tb_top_packet_backend_fp_add_sub_smoke` verifies dynamic rounding, cross-domain
@@ -150,8 +156,38 @@ tb_top_packet_backend_multi_issue_suite
 tb_top_packet_backend_rv32i_smoke
 tb_top_packet_backend_25test
 tb_top_packet_backend_trap_smoke
+tb_top_packet_backend_misaligned_smoke
+tb_top_packet_backend_access_fault_smoke
+tb_top_packet_backend_exception_interrupt_priority
+tb_top_packet_backend_fence_smoke
+tb_top_packet_backend_privilege_smoke
+tb_top_packet_backend_pmp_smoke
 tb_top_packet_backend_interrupt_smoke
+tb_top_packet_backend_precise_interrupt_smoke
+tb_top_packet_backend_nested_interrupt_smoke
+tb_top_packet_backend_wfi_level_irq_smoke
 ```
+
+The consolidated PMP smoke test covers all sixteen entries, TOR/NA4/NAPOT
+matching, static priority, partial-overlap faults, lock propagation, and
+precise instruction/load/store access faults. It also verifies that ordinary
+M-mode accesses bypass unlocked PMP entries while `mstatus.MPRV` applies the
+`MPP` effective privilege to data accesses without changing fetch privilege.
+
+The precise-interrupt smoke test raises an external interrupt while a
+cold-cache load is the incomplete ROB head. It checks non-empty-ROB interrupt
+acceptance, exact `mepc`, full speculative-state recovery, `MRET` replay, and
+single execution of the handler's architectural side effects.
+
+The nested-interrupt smoke test takes an external interrupt, saves the outer
+machine trap context, reenables `MIE`, and injects a software interrupt. It
+checks both causes and restart PCs, the inner return to the outer handler, the
+restored outer context, and the final return to main.
+
+The WFI/level-interrupt smoke test holds an external source asserted across
+`MRET` to prove level-sensitive retriggering and the exact WFI resume PC. It
+also clears global `mstatus.MIE` while leaving `mie.MEIE` set, proving that the
+source wakes WFI without taking another trap or retiring work while asleep.
 
 ### Multi-Issue
 
@@ -177,6 +213,9 @@ tb_lsu_commit_store
 tb_top_packet_backend_multi_issue_suite
 tb_top_packet_backend_rv32i_smoke
 tb_top_misaligned_smoke
+tb_top_packet_backend_misaligned_smoke
+tb_top_packet_backend_access_fault_smoke
+tb_top_packet_backend_fence_smoke
 ```
 
 ### Invariants
@@ -186,6 +225,15 @@ tb_reg_alias_table_2w
 tb_free_pool_2w
 tb_rob_2w
 tb_lsu_commit_store
+tb_top_packet_backend_misaligned_smoke
+tb_top_packet_backend_access_fault_smoke
+tb_top_packet_backend_exception_interrupt_priority
+tb_top_packet_backend_fence_smoke
+tb_top_packet_backend_privilege_smoke
+tb_top_packet_backend_pmp_smoke
+tb_top_packet_backend_precise_interrupt_smoke
+tb_top_packet_backend_nested_interrupt_smoke
+tb_top_packet_backend_wfi_level_irq_smoke
 tb_top_packet_backend_25test
 ```
 
@@ -233,6 +281,28 @@ seeds have also passed the same retirement and final-state checks.
 ### Full
 
 ```text
+tb_fp_infrastructure_smoke
+tb_fp_rename_smoke
+tb_fp_memory_bridge_smoke
+tb_fp_domain_wakeup_smoke
+tb_top_packet_backend_fp_memory_smoke
+tb_fp_simple_unit
+tb_top_packet_backend_fp_simple_smoke
+tb_top_packet_backend_fp_flags_smoke
+tb_top_packet_backend_fp_fs_smoke
+tb_fp_add_sub_unit
+tb_top_packet_backend_fp_add_sub_smoke
+tb_fp_mul_unit
+tb_fp_convert_unit
+tb_fp_div_sqrt_unit
+tb_fp_div_sqrt_iterative
+tb_fp_fma_unit
+tb_fp_softfloat_diff
+tb_fp_execution_pipeline
+tb_top_packet_backend_fp_pipeline_smoke
+tb_top_packet_backend_fp_convert_smoke
+tb_top_packet_backend_fp_div_sqrt_smoke
+tb_top_packet_backend_fp_fma_smoke
 tb_fetch_packet_stage
 tb_decode_packet_stage
 tb_rename_packet_stage
@@ -250,7 +320,16 @@ tb_top_packet_backend_lane1_squash_smoke
 tb_top_packet_backend_rv32i_smoke
 tb_top_packet_backend_25test
 tb_top_packet_backend_trap_smoke
+tb_top_packet_backend_misaligned_smoke
+tb_top_packet_backend_access_fault_smoke
+tb_top_packet_backend_exception_interrupt_priority
+tb_top_packet_backend_fence_smoke
+tb_top_packet_backend_privilege_smoke
+tb_top_packet_backend_pmp_smoke
 tb_top_packet_backend_interrupt_smoke
+tb_top_packet_backend_precise_interrupt_smoke
+tb_top_packet_backend_nested_interrupt_smoke
+tb_top_packet_backend_wfi_level_irq_smoke
 tb_top_packet_backend_long_stress
 ```
 

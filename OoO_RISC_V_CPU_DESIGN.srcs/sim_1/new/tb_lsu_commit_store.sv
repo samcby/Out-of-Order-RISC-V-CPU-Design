@@ -17,6 +17,7 @@ module tb_lsu_commit_store;
 
     logic req_valid;
     logic req_ready;
+    logic flush;
     logic squash_en;
     cp_id_t squash_checkpoint_id;
     logic resolve_en;
@@ -47,6 +48,7 @@ module tb_lsu_commit_store;
         .rst_n(rst_n),
         .req_valid(req_valid),
         .req_ready(req_ready),
+        .flush(flush),
         .squash_en(squash_en),
         .squash_checkpoint_id(squash_checkpoint_id),
         .resolve_en(resolve_en),
@@ -228,6 +230,7 @@ module tb_lsu_commit_store;
     initial begin
         rst_n = 1'b0;
         req_valid = 1'b0;
+        flush = 1'b0;
         squash_en = 1'b0;
         squash_checkpoint_id = '0;
         resolve_en = 1'b0;
@@ -425,6 +428,56 @@ module tb_lsu_commit_store;
         check_ok((dut.u_data_cache.line_data[0][0][1] != 32'hbad0bad0) &&
                  (dut.u_data_cache.line_data[0][1][1] != 32'hbad0bad0),
                  "late commit tag for squashed store has no cache side effect");
+
+        // An unmatched commit must not survive until the 8-bit ROB tag is
+        // reused. Otherwise the new, uncommitted store would become visible.
+        dut.u_data_cache.u_data_memory.mem[4] = 32'h00000000;
+        issue_store(rob_tag_t'(8'd7), 32'h00000010, 32'h13579bdf, '0);
+        repeat (20) step_clk;
+        check_ok(dut.u_data_cache.u_data_memory.mem[4] == 32'h00000000,
+                 "unmatched commit does not poison a reused store tag");
+        check_ok((dut.u_data_cache.line_data[1][0][0] != 32'h13579bdf) &&
+                 (dut.u_data_cache.line_data[1][1][0] != 32'h13579bdf),
+                 "reused uncommitted store remains private");
+
+        // A precise architectural flush discards all younger uncommitted LSU
+        // state, but an older committed store remains architectural and must
+        // still reach memory.
+        issue_store(rob_tag_t'(8'd50), 32'h00000018, 32'h2468ace0, '0);
+        commit_store_valid0 = 1'b1;
+        commit_store_tag0 = rob_tag_t'(8'd50);
+        step_clk;
+        commit_store_valid0 = 1'b0;
+        commit_store_tag0 = '0;
+        flush = 1'b1;
+        step_clk;
+        flush = 1'b0;
+        repeat (12) step_clk;
+        check_ok((dut.u_data_cache.line_data[1][0][2] == 32'h2468ace0) ||
+                 (dut.u_data_cache.line_data[1][1][2] == 32'h2468ace0),
+                 "full flush preserves and drains an older committed store");
+
+        issue_store(rob_tag_t'(8'd51), 32'h0000001c, 32'hdead1234, '0);
+        issue_load(rob_tag_t'(8'd52), preg_t'(7'd52), 32'h00000024);
+        check_ok(dut.pending_valid,
+                 "younger load occupies the pending slot before full flush");
+        flush = 1'b1;
+        step_clk;
+        flush = 1'b0;
+        repeat (8) step_clk;
+        check_ok(!dut.pending_valid,
+                 "full flush clears a younger pending load");
+        check_ok(!dut.store_buf_valid[0] &&
+                 !dut.store_buf_valid[1] &&
+                 !dut.store_buf_valid[2] &&
+                 !dut.store_buf_valid[3] &&
+                 !dut.store_buf_valid[4] &&
+                 !dut.store_buf_valid[5] &&
+                 !dut.store_buf_valid[6] &&
+                 !dut.store_buf_valid[7],
+                 "full flush clears younger uncommitted stores");
+        check_ok(dut.u_data_cache.u_data_memory.mem[7] != 32'hdead1234,
+                 "full-flushed uncommitted store remains side-effect free");
 
         $display("[SUMMARY] load_result=0x%08h line0_word0=0x%08h line1_word0=0x%08h mem0=0x%08h mem1=0x%08h",
                  resp_result,

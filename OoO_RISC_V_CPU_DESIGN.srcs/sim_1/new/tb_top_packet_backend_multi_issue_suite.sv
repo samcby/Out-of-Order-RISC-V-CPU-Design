@@ -33,7 +33,9 @@ module tb_top_packet_backend_multi_issue_suite;
     int jalr_wait_count;
     int redirect_count;
 
-    top_packet_backend dut (
+    top_packet_backend #(
+        .DMEM_BASE_ADDR(32'h00000000)
+    ) dut (
         .clk(clk),
         .rst_n(rst_n),
         .software_irq(software_irq),

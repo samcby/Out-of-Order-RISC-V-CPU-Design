@@ -30,6 +30,10 @@ module tb_top_packet_backend_trap_smoke;
     int drain_cycles;
     int csr_system_issue_count;
     int csr_system_pair_count;
+    int precise_trap_count;
+    int precise_trap_bad_count;
+    int early_ecall_side_effect_count;
+    int ecall_retire_count;
     preg_t a0_preg;
     preg_t a1_preg;
     logic [31:0] a0_value;
@@ -74,6 +78,39 @@ module tb_top_packet_backend_trap_smoke;
                 if (dut.issue1_if.valid && dut.issue1_if.ready) begin
                     csr_system_pair_count <= csr_system_pair_count + 1;
                 end
+            end
+        end
+    end
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            precise_trap_count           <= 0;
+            precise_trap_bad_count       <= 0;
+            early_ecall_side_effect_count <= 0;
+            ecall_retire_count           <= 0;
+        end else begin
+            if (dut.trap_commit) begin
+                precise_trap_count <= precise_trap_count + 1;
+                if (!dut.rob_head.datapath.exception_valid ||
+                    (dut.rob_head.datapath.pc != 32'h00000008) ||
+                    (dut.rob_head.datapath.exception_cause != MCAUSE_ECALL_M) ||
+                    (dut.rob_head.datapath.exception_tval != 32'b0)) begin
+                    precise_trap_bad_count <= precise_trap_bad_count + 1;
+                end
+            end
+
+            if (dut.issue_if.valid && dut.issue_if.ready &&
+                (dut.issue_if.data.datapath.instr == 32'h00000073) &&
+                (dut.u_execution.u_csr_file.mcause_q == MCAUSE_ECALL_M)) begin
+                early_ecall_side_effect_count <=
+                    early_ecall_side_effect_count + 1;
+            end
+
+            if ((dut.retire_trace0.valid &&
+                 (dut.retire_trace0.instr == 32'h00000073)) ||
+                (dut.retire_trace1.valid &&
+                 (dut.retire_trace1.instr == 32'h00000073))) begin
+                ecall_retire_count <= ecall_retire_count + 1;
             end
         end
     end
@@ -168,7 +205,7 @@ module tb_top_packet_backend_trap_smoke;
         mcause_value  = dut.u_execution.u_csr_file.mcause_q;
         mstatus_value = dut.u_execution.u_csr_file.mstatus_q;
 
-        $display("[SUMMARY] a0_preg=%0d a0=%0d (0x%08h) a1_preg=%0d a1=%0d (0x%08h) mtvec=0x%08h mepc=0x%08h mcause=0x%08h mstatus=0x%08h csr_sys_issue=%0d csr_sys_pair=%0d rob_empty=%0b drain_cycles=%0d",
+        $display("[SUMMARY] a0_preg=%0d a0=%0d (0x%08h) a1_preg=%0d a1=%0d (0x%08h) mtvec=0x%08h mepc=0x%08h mcause=0x%08h mstatus=0x%08h csr_sys_issue=%0d csr_sys_pair=%0d precise_traps=%0d bad_traps=%0d early_side_effects=%0d ecall_retires=%0d rob_empty=%0b drain_cycles=%0d",
                  a0_preg, $signed(a0_value), a0_value,
                  a1_preg, $signed(a1_value), a1_value,
                  mtvec_value,
@@ -177,6 +214,10 @@ module tb_top_packet_backend_trap_smoke;
                  mstatus_value,
                  csr_system_issue_count,
                  csr_system_pair_count,
+                 precise_trap_count,
+                 precise_trap_bad_count,
+                 early_ecall_side_effect_count,
+                 ecall_retire_count,
                  dut.u_dispatch_packet.u_rob_2w.empty,
                  drain_cycles);
 
@@ -189,6 +230,10 @@ module tb_top_packet_backend_trap_smoke;
         check_ok(mstatus_value == 32'h00000080, "packet backend trap mret set MPIE and restored disabled MIE");
         check_ok(csr_system_issue_count >= 1, "packet backend trap issued CSR/system operations");
         check_ok(csr_system_pair_count == 0, "packet backend trap kept CSR/system operations single-issue");
+        check_ok(precise_trap_count == 1, "ECALL generated exactly one ROB-head trap");
+        check_ok(precise_trap_bad_count == 0, "ROB-head trap preserved ECALL pc/cause/tval");
+        check_ok(early_ecall_side_effect_count == 0, "ECALL did not update trap CSRs at execution");
+        check_ok(ecall_retire_count == 0, "ECALL was not reported as a normally retired instruction");
 
         if (fail_count == 0) begin
             $display("==== tb_top_packet_backend_trap_smoke PASS ====");

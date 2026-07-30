@@ -31,6 +31,7 @@ module tb_dispatch_packet_logic;
 
     dispatch_packet_logic dut (
         .in_if(in_if.consumer),
+        .halt(1'b0),
         .lane0_src1_ready(lane0_src1_ready),
         .lane0_src2_ready(lane0_src2_ready),
         .lane0_src1_value(lane0_src1_value),

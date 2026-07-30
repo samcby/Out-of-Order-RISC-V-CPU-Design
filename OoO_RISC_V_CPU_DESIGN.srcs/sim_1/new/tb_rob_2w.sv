@@ -21,6 +21,9 @@ module tb_rob_2w;
     logic [WIDTH-1:0] complete_result0;
     logic [WIDTH-1:0] complete_result1;
     logic [WIDTH-1:0] complete_result2;
+    logic complete_exception_valid0;
+    logic [WIDTH-1:0] complete_exception_cause0;
+    logic [WIDTH-1:0] complete_exception_tval0;
     logic commit_en;
     logic commit_en1;
     logic flush;
@@ -45,14 +48,23 @@ module tb_rob_2w;
         .complete_tag0(complete_tag0),
         .complete_result0(complete_result0),
         .complete_fp_flags0('0),
+        .complete_exception_valid0(complete_exception_valid0),
+        .complete_exception_cause0(complete_exception_cause0),
+        .complete_exception_tval0(complete_exception_tval0),
         .complete_en1(complete_en1),
         .complete_tag1(complete_tag1),
         .complete_result1(complete_result1),
         .complete_fp_flags1('0),
+        .complete_exception_valid1(1'b0),
+        .complete_exception_cause1('0),
+        .complete_exception_tval1('0),
         .complete_en2(complete_en2),
         .complete_tag2(complete_tag2),
         .complete_result2(complete_result2),
         .complete_fp_flags2('0),
+        .complete_exception_valid2(1'b0),
+        .complete_exception_cause2('0),
+        .complete_exception_tval2('0),
         .commit_en0(commit_en),
         .commit_en1(commit_en1),
         .flush(flush),
@@ -122,6 +134,9 @@ module tb_rob_2w;
         complete_result0 = '0;
         complete_result1 = '0;
         complete_result2 = '0;
+        complete_exception_valid0 = 1'b0;
+        complete_exception_cause0 = '0;
+        complete_exception_tval0 = '0;
         commit_en = 1'b0;
         commit_en1 = 1'b0;
         flush = 1'b0;
@@ -172,6 +187,36 @@ module tb_rob_2w;
         commit_en = 1'b0;
         commit_en1 = 1'b0;
         check_ok(empty, "ROB drains after dual-committing both entries");
+
+        rob_packet_if.valid = 1'b1;
+        set_rob_lane(rob_packet_if.data.lane0, 1'b1,
+                     rob_tag_t'(12), areg_t'(0), preg_t'(0), '0);
+        rob_packet_if.data.lane0.data.rob_entry.datapath.pc = 32'h0000_0080;
+        rob_packet_if.data.lane1 = '0;
+        step_clk;
+
+        rob_packet_if.valid = 1'b0;
+        complete_en0 = 1'b1;
+        complete_tag0 = rob_tag_t'(12);
+        complete_exception_valid0 = 1'b1;
+        complete_exception_cause0 = MCAUSE_ILLEGAL;
+        complete_exception_tval0 = 32'hffff_ffff;
+        step_clk;
+
+        complete_en0 = 1'b0;
+        complete_exception_valid0 = 1'b0;
+        check_ok(head_complete, "exception completion marks ROB entry complete");
+        check_ok(head_entry.datapath.exception_valid,
+                 "ROB preserves completion exception validity");
+        check_ok(head_entry.datapath.exception_cause == MCAUSE_ILLEGAL,
+                 "ROB preserves completion exception cause");
+        check_ok(head_entry.datapath.exception_tval == 32'hffff_ffff,
+                 "ROB preserves completion exception trap value");
+
+        flush = 1'b1;
+        step_clk;
+        flush = 1'b0;
+        check_ok(empty, "flush removes exceptional ROB entry");
 
         rob_packet_if.valid = 1'b1;
         set_rob_lane(rob_packet_if.data.lane0, 1'b1, rob_tag_t'(20), areg_t'(3), preg_t'(34), '0);

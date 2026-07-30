@@ -17,6 +17,13 @@ module reg_alias_table_2w (
     input  defines_pkg::cp_id_t checkpoint_id_save,
     input  logic restore_en,
     input  defines_pkg::cp_id_t restore_checkpoint_id,
+    input  logic architectural_restore,
+
+    input  logic [1:0] retire_valid,
+    input  defines_pkg::areg_t retire_areg0,
+    input  defines_pkg::areg_t retire_areg1,
+    input  defines_pkg::preg_t retire_new_preg0,
+    input  defines_pkg::preg_t retire_new_preg1,
 
     input  defines_pkg::areg_t lane0_src_reg_1a,
     input  defines_pkg::areg_t lane0_src_reg_2a,
@@ -39,6 +46,7 @@ module reg_alias_table_2w (
     import defines_pkg::*;
 
     preg_t rat [0:AREG_NUM-1];
+    preg_t committed_rat [0:AREG_NUM-1];
     preg_t checkpoints [0:CHECKPOINT_NUM-1][0:AREG_NUM-1];
 
     assign lane0_src_reg_1p   = rat[lane0_src_reg_1a];
@@ -61,7 +69,9 @@ module reg_alias_table_2w (
     always_comb begin
         mapped_bitmap = '0;
         for (int i = 0; i < AREG_NUM; i++) begin
-            if (restore_en) begin
+            if (architectural_restore === 1'b1) begin
+                mapped_bitmap[committed_rat[i]] = 1'b1;
+            end else if (restore_en) begin
                 mapped_bitmap[checkpoints[restore_checkpoint_id][i]] = 1'b1;
             end else begin
                 mapped_bitmap[rat[i]] = 1'b1;
@@ -74,9 +84,14 @@ module reg_alias_table_2w (
         if (!rst_n) begin
             for (int i = 0; i < AREG_NUM; i++) begin
                 rat[i] <= preg_t'(i);
+                committed_rat[i] <= preg_t'(i);
                 for (int j = 0; j < CHECKPOINT_NUM; j++) begin
                     checkpoints[j][i] <= preg_t'(i);
                 end
+            end
+        end else if (architectural_restore === 1'b1) begin
+            for (int i = 0; i < AREG_NUM; i++) begin
+                rat[i] <= committed_rat[i];
             end
         end else if (restore_en) begin
             for (int i = 0; i < AREG_NUM; i++) begin
@@ -103,6 +118,15 @@ module reg_alias_table_2w (
                 rat[lane1_des_reg_a] <= lane1_new_des_preg;
             end
         end
+
+        if (rst_n) begin
+            if ((retire_valid[0] === 1'b1) && (retire_areg0 != '0)) begin
+                committed_rat[retire_areg0] <= retire_new_preg0;
+            end
+            if ((retire_valid[1] === 1'b1) && (retire_areg1 != '0)) begin
+                committed_rat[retire_areg1] <= retire_new_preg1;
+            end
+        end
     end
 
 `ifndef SYNTHESIS
@@ -110,8 +134,16 @@ module reg_alias_table_2w (
         if (rst_n === 1'b1) begin
             assert (rat[0] == '0)
                 else $error("[ASSERT:RAT] architectural x0 mapping changed");
+            assert (committed_rat[0] == '0)
+                else $error("[ASSERT:RAT] committed x0 mapping changed");
             assert (mapped_bitmap[0])
                 else $error("[ASSERT:RAT] physical zero is not reserved");
+            assert (!((retire_valid[0] === 1'b1) && (retire_areg0 != '0)) ||
+                    (retire_new_preg0 != '0))
+                else $error("[ASSERT:RAT] lane0 retired physical zero");
+            assert (!((retire_valid[1] === 1'b1) && (retire_areg1 != '0)) ||
+                    (retire_new_preg1 != '0))
+                else $error("[ASSERT:RAT] lane1 retired physical zero");
             assert (!(w_en[0] && (lane0_des_reg_a != '0)) ||
                     (lane0_new_des_preg != '0))
                 else $error("[ASSERT:RAT] lane0 allocated physical zero");

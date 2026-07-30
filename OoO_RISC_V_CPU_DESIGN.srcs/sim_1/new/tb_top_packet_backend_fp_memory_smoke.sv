@@ -30,6 +30,7 @@ module tb_top_packet_backend_fp_memory_smoke;
     logic [31:0] f1_value;
     logic [31:0] stored_way0;
     logic [31:0] stored_way1;
+    int fp_disabled_count;
     int errors;
 
     always #5 clk = ~clk;
@@ -70,7 +71,9 @@ module tb_top_packet_backend_fp_memory_smoke;
     end
     endtask
 
-    top_packet_backend u_dut (
+    top_packet_backend #(
+        .RESET_FS_INITIAL(1'b1)
+    ) u_dut (
         .clk(clk),
         .rst_n(rst_n),
         .software_irq(1'b0),
@@ -88,6 +91,16 @@ module tb_top_packet_backend_fp_memory_smoke;
         .rob_head_rd(rob_head_rd)
     );
 
+    always_ff @(posedge clk) begin
+        if (!rst_n) begin
+            fp_disabled_count <= 0;
+        end else begin
+            fp_disabled_count <= fp_disabled_count +
+                (u_dut.u_execution.issue0_fp_disabled_fire ? 1 : 0) +
+                (u_dut.u_execution.issue1_fp_disabled_fire ? 1 : 0);
+        end
+    end
+
     initial begin
         clk = 1'b0;
         rst_n = 1'b0;
@@ -103,7 +116,7 @@ module tb_top_packet_backend_fp_memory_smoke;
         u_dut.u_execution.u_lsu.u_data_cache.u_data_memory.mem[0] = 32'h3fc00000;
         u_dut.u_execution.u_lsu.u_data_cache.u_data_memory.mem[1] = '0;
 
-        write_word(32'd0,  32'h00000093); // addi x1,x0,0
+        write_word(32'd0,  32'h000100b7); // lui  x1,0x10 (data base 0x10000)
         write_word(32'd4,  32'h0000a087); // flw  f1,0(x1)
         write_word(32'd8,  32'h0010a227); // fsw  f1,4(x1)
         write_word(32'd12, 32'h0040a007); // flw  f0,4(x1)
@@ -121,10 +134,14 @@ module tb_top_packet_backend_fp_memory_smoke;
         stored_way0 = u_dut.u_execution.u_lsu.u_data_cache.line_data[0][0][1];
         stored_way1 = u_dut.u_execution.u_lsu.u_data_cache.line_data[0][1][1];
 
-        $display("[SUMMARY] f0_preg=%0d f0=0x%08h f1_preg=%0d f1=0x%08h store0=0x%08h store1=0x%08h rob_empty=%0b",
+        $display("[SUMMARY] f0_preg=%0d f0=0x%08h f1_preg=%0d f1=0x%08h store0=0x%08h store1=0x%08h rob_empty=%0b mstatus=0x%08h mcause=0x%08h mtval=0x%08h fp_disabled=%0d",
                  f0_preg, f0_value, f1_preg, f1_value,
                  stored_way0, stored_way1,
-                 u_dut.u_dispatch_packet.u_rob_2w.empty);
+                 u_dut.u_dispatch_packet.u_rob_2w.empty,
+                 u_dut.u_execution.csr_mstatus_value,
+                 u_dut.u_execution.u_csr_file.mcause_q,
+                 u_dut.u_execution.u_csr_file.mtval_q,
+                 fp_disabled_count);
 
         check_ok(u_dut.u_dispatch_packet.u_rob_2w.empty,
                  "packet backend ROB drains after FLW/FSW program");

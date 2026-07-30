@@ -12,7 +12,12 @@
 // trains frontend predictors, and converts synchronous exceptions, interrupts,
 // and MRET into PC redirects plus CSR state updates.
 module execution_stage #(
-    parameter int MEM_WORDS = 256
+    parameter int MEM_WORDS = 256,
+    parameter logic [defines_pkg::WIDTH-1:0] DATA_BASE_ADDR = '0,
+    parameter bit ENABLE_DATA_ACCESS_FAULTS = 1'b0,
+    parameter bit ENABLE_PMP = 1'b0,
+    parameter bit PRECISE_SYSTEM_EXCEPTIONS = 1'b0,
+    parameter bit RESET_FS_INITIAL = 1'b0
 )(
     pip_if.consumer in_if,
     pip_if.consumer in1_if,
@@ -23,6 +28,10 @@ module execution_stage #(
     input  logic                           interrupt_take,
     input  logic [defines_pkg::WIDTH-1:0]  interrupt_mepc,
     input  logic [defines_pkg::WIDTH-1:0]  interrupt_mcause,
+    input  logic                           commit_trap_en,
+    input  logic [defines_pkg::WIDTH-1:0]  commit_trap_mepc,
+    input  logic [defines_pkg::WIDTH-1:0]  commit_trap_mcause,
+    input  logic [defines_pkg::WIDTH-1:0]  commit_trap_mtval,
     input  logic [2:0]                     fp_frm_value,
     input  logic [defines_pkg::WIDTH-1:0]  fp_csr_rdata,
     input  logic                           fp_state_dirty,
@@ -45,13 +54,22 @@ module execution_stage #(
     output defines_pkg::rob_tag_t          complete_tag,
     output logic [defines_pkg::WIDTH-1:0]  complete_result,
     output logic [4:0]                     complete_fp_flags,
+    output logic                           complete_exception_valid,
+    output logic [defines_pkg::WIDTH-1:0]  complete_exception_cause,
+    output logic [defines_pkg::WIDTH-1:0]  complete_exception_tval,
     output logic                           branch_complete_valid,
     output defines_pkg::rob_tag_t          branch_complete_tag,
     output logic [defines_pkg::WIDTH-1:0]  branch_complete_result,
+    output logic                           branch_complete_exception_valid,
+    output logic [defines_pkg::WIDTH-1:0]  branch_complete_exception_cause,
+    output logic [defines_pkg::WIDTH-1:0]  branch_complete_exception_tval,
     output logic                           lane1_complete_valid,
     output defines_pkg::rob_tag_t          lane1_complete_tag,
     output logic [defines_pkg::WIDTH-1:0]  lane1_complete_result,
     output logic [4:0]                     lane1_complete_fp_flags,
+    output logic                           lane1_complete_exception_valid,
+    output logic [defines_pkg::WIDTH-1:0]  lane1_complete_exception_cause,
+    output logic [defines_pkg::WIDTH-1:0]  lane1_complete_exception_tval,
 
     output logic                           branch_resolve,
     output logic [defines_pkg::CHECKPOINT_W-1:0] resolve_checkpoint_id,
@@ -64,11 +82,20 @@ module execution_stage #(
     output logic                           pc_src,
     output logic [defines_pkg::WIDTH-1:0]  pc_branch,
     output logic                           recover_rat,
+    output logic                           mret_flush,
     output logic [defines_pkg::WIDTH-1:0]  csr_mstatus_value,
     output logic [defines_pkg::WIDTH-1:0]  csr_mie_value,
+    output logic [1:0]                     csr_privilege_mode,
+    output logic [defines_pkg::WIDTH-1:0]  csr_pmpcfg0_value,
+    output logic [defines_pkg::WIDTH-1:0]  csr_pmpaddr0_value,
+    output logic [defines_pkg::PMP_ENTRY_COUNT*8-1:0]
+                                             csr_pmpcfg_values,
+    output logic [defines_pkg::PMP_ENTRY_COUNT*defines_pkg::WIDTH-1:0]
+                                             csr_pmpaddr_values,
     output logic                           fp_csr_write_en,
     output logic [11:0]                    fp_csr_write_addr,
-    output logic [defines_pkg::WIDTH-1:0]  fp_csr_write_data
+    output logic [defines_pkg::WIDTH-1:0]  fp_csr_write_data,
+    output logic                           memory_quiescent
     
 );
     import defines_pkg::*;
@@ -88,6 +115,7 @@ module execution_stage #(
     logic             lsu_resp_reg_write;
     logic             lsu_resp_dest_is_fp;
     logic [WIDTH-1:0] lsu_resp_result;
+    logic             lsu_idle;
     logic [WIDTH-1:0] csr_result;
     logic [WIDTH-1:0] selected_csr_result;
     logic [WIDTH-1:0] csr_mtvec_value;
@@ -98,10 +126,15 @@ module execution_stage #(
     logic             fp_csr_selected;
     logic             sys_issue_now;
     logic             trap_write_en;
+    logic             commit_trap_fire;
     logic             sync_exception_write_en;
     logic             csr_trap_write_en;
     logic             csr_mret_en;
+    logic             branch_pipeline_flush;
     logic             illegal_trap_en;
+    logic             csr_privilege_illegal;
+    logic             mret_privilege_illegal;
+    logic             wfi_privilege_illegal;
     logic [WIDTH-1:0] csr_trap_mepc;
     logic [WIDTH-1:0] csr_trap_mcause;
     logic [WIDTH-1:0] csr_trap_mtval;
@@ -122,6 +155,15 @@ module execution_stage #(
     logic             mem_load_misaligned_now;
     logic             mem_store_misaligned_now;
     logic             mem_addr_misaligned_now;
+    logic [2:0]       mem_access_size_minus1;
+    logic [WIDTH:0]   mem_access_last_addr;
+    logic [WIDTH:0]   data_window_end_addr;
+    logic [1:0]       mem_effective_privilege;
+    logic             mem_access_fault_candidate;
+    logic             mem_pmp_allowed;
+    logic             mem_load_access_fault_now;
+    logic             mem_store_access_fault_now;
+    logic             mem_access_fault_now;
     logic [WIDTH-1:0] branch_link_result;
     logic             branch_taken;
     logic [WIDTH-1:0] branch_target;
@@ -159,12 +201,17 @@ module execution_stage #(
     logic issue1_fp_candidate;
     logic issue0_fp_long_candidate;
     logic issue1_fp_long_candidate;
+    logic issue0_fp_disabled_candidate;
+    logic issue1_fp_disabled_candidate;
+    logic issue0_fp_disabled_fire;
+    logic issue1_fp_disabled_fire;
     logic issue1_alu_candidate;
     logic issue1_alu_fire;
     logic issue1_mem_candidate;
     logic issue1_mem_fire;
     logic issue0_mem_candidate;
     logic issue0_mem_fire;
+    logic fence_candidate;
     lsu_control_t selected_mem_control;
     rs_datapath_t selected_mem_datapath;
     logic fp0_in_ready;
@@ -212,11 +259,24 @@ module execution_stage #(
                                         branch_actual_taken_now &&
                                         (branch_target[1:0] != 2'b00);
     assign branch_issue_now = branch_fu_fire && !branch_addr_misaligned_now;
+    assign issue0_fp_disabled_candidate =
+        in_if.valid &&
+        (csr_mstatus_value[14:13] == 2'b00) &&
+        instruction_uses_fp_state(in_if.data.datapath.instr);
+    assign issue1_fp_disabled_candidate =
+        in1_if.valid &&
+        (csr_mstatus_value[14:13] == 2'b00) &&
+        instruction_uses_fp_state(in1_if.data.datapath.instr);
+    assign issue0_fp_disabled_fire =
+        issue0_fp_disabled_candidate && in_if.ready;
+    assign issue1_fp_disabled_fire =
+        issue1_fp_disabled_candidate && in1_if.ready;
     // Classify FP work before assigning ready. Simple FP operations remain on
     // the scalar ALU path; these candidates are the operations that must enter
     // a fixed-latency FP pipe and therefore carry result metadata internally.
     assign issue0_fp_candidate =
         in_if.valid &&
+        !issue0_fp_disabled_candidate &&
         (in_if.data.fu_sel == FU_ALU) &&
         in_if.data.control_signal.alu.fp_en &&
         ((in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_ADD) ||
@@ -232,6 +292,7 @@ module execution_stage #(
          (in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_NMADD));
     assign issue1_fp_candidate =
         in1_if.valid &&
+        !issue1_fp_disabled_candidate &&
         (in1_if.data.fu_sel == FU_ALU) &&
         in1_if.data.control_signal.alu.fp_en &&
         ((in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_ADD) ||
@@ -247,18 +308,21 @@ module execution_stage #(
          (in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_NMADD));
     assign issue0_fp_long_candidate =
         in_if.valid &&
+        !issue0_fp_disabled_candidate &&
         (in_if.data.fu_sel == FU_ALU) &&
         in_if.data.control_signal.alu.fp_en &&
         ((in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_DIV) ||
          (in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_SQRT));
     assign issue1_fp_long_candidate =
         in1_if.valid &&
+        !issue1_fp_disabled_candidate &&
         (in1_if.data.fu_sel == FU_ALU) &&
         in1_if.data.control_signal.alu.fp_en &&
         ((in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_DIV) ||
          (in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_SQRT));
     assign issue1_alu_candidate =
         in1_if.valid &&
+        !issue1_fp_disabled_candidate &&
         (in1_if.data.fu_sel == FU_ALU) &&
         !in1_if.data.control_signal.alu.csr_en &&
         !in1_if.data.control_signal.alu.sys_en &&
@@ -266,9 +330,11 @@ module execution_stage #(
         !issue1_fp_long_candidate;
     assign issue1_mem_candidate =
         in1_if.valid &&
+        !issue1_fp_disabled_candidate &&
         (in1_if.data.fu_sel == FU_MEM);
     assign issue0_mem_candidate =
         in_if.valid &&
+        !issue0_fp_disabled_candidate &&
         (in_if.data.fu_sel == FU_MEM);
     assign selected_mem_control =
         issue1_mem_candidate ? in1_if.data.control_signal.lsu :
@@ -279,7 +345,9 @@ module execution_stage #(
     assign in1_if.ready =
         !in1_if.valid ||
         (!interrupt_take &&
-         (issue1_fp_long_candidate ?
+         (issue1_fp_disabled_candidate ?
+              !fp1_out_valid :
+          issue1_fp_long_candidate ?
               (!issue0_fp_long_candidate && fp_long_in_ready) :
           issue1_fp_candidate ?
               fp1_in_ready :
@@ -287,7 +355,9 @@ module execution_stage #(
                (issue1_alu_candidate ||
                 (issue1_mem_candidate &&
                  !lsu_resp_valid &&
-                 (mem_addr_misaligned_candidate || lsu_req_ready))))));
+                 (mem_addr_misaligned_candidate ||
+                  mem_access_fault_candidate ||
+                  lsu_req_ready))))));
     assign issue1_alu_fire = in1_if.valid && in1_if.ready && issue1_alu_candidate;
     assign issue1_mem_fire = in1_if.valid && in1_if.ready && issue1_mem_candidate;
     assign issue0_mem_fire = in_if.valid && in_if.ready && issue0_mem_candidate;
@@ -307,18 +377,64 @@ module execution_stage #(
          ((selected_mem_control.funct3 == 3'b010) && (mem_eff_addr[1:0] != 2'b00)));
     assign mem_addr_misaligned_candidate =
         mem_load_misaligned_candidate || mem_store_misaligned_candidate;
+    always_comb begin
+        mem_access_size_minus1 = 3'd0;
+        unique case (selected_mem_control.funct3)
+            3'b001,
+            3'b101: mem_access_size_minus1 = 3'd1;
+            3'b010: mem_access_size_minus1 = 3'd3;
+            default: mem_access_size_minus1 = 3'd0;
+        endcase
+    end
+    assign mem_access_last_addr =
+        {1'b0, mem_eff_addr} + {{(WIDTH-2){1'b0}}, mem_access_size_minus1};
+    assign data_window_end_addr =
+        {1'b0, DATA_BASE_ADDR} + (MEM_WORDS * 4);
+    // MPRV changes only load/store permission checks while executing in
+    // M-mode. Instruction fetch continues to use the current privilege.
+    assign mem_effective_privilege =
+        ((csr_privilege_mode == PRV_M) && csr_mstatus_value[17]) ?
+            ((csr_mstatus_value[12:11] == PRV_M) ? PRV_M : PRV_U) :
+            csr_privilege_mode;
+    assign mem_pmp_allowed = pmp_access_allowed(
+        mem_effective_privilege,
+        csr_pmpcfg_values,
+        csr_pmpaddr_values,
+        mem_eff_addr,
+        mem_access_size_minus1,
+        selected_mem_control.mem_read,
+        selected_mem_control.mem_write,
+        1'b0);
+    assign mem_access_fault_candidate =
+        mem_issue_candidate &&
+        !mem_addr_misaligned_candidate &&
+        (((ENABLE_DATA_ACCESS_FAULTS &&
+           ((mem_eff_addr < DATA_BASE_ADDR) ||
+            (mem_access_last_addr >= data_window_end_addr)))) ||
+         (ENABLE_PMP && !mem_pmp_allowed));
     assign mem_load_misaligned_now =
         mem_fu_fire && mem_load_misaligned_candidate;
     assign mem_store_misaligned_now =
         mem_fu_fire && mem_store_misaligned_candidate;
     assign mem_addr_misaligned_now = mem_load_misaligned_now || mem_store_misaligned_now;
+    assign mem_load_access_fault_now =
+        mem_fu_fire &&
+        mem_access_fault_candidate &&
+        selected_mem_control.mem_read;
+    assign mem_store_access_fault_now =
+        mem_fu_fire &&
+        mem_access_fault_candidate &&
+        selected_mem_control.mem_write;
+    assign mem_access_fault_now =
+        mem_load_access_fault_now || mem_store_access_fault_now;
     assign lsu_req_valid = mem_fu_fire &&
                            !mem_addr_misaligned_now &&
+                           !mem_access_fault_now &&
                            (selected_mem_control.mem_read ||
                             selected_mem_control.mem_write);
     always_comb begin
         lsu_control_safe = selected_mem_control;
-        if (mem_addr_misaligned_now) begin
+        if (mem_addr_misaligned_now || mem_access_fault_now) begin
             lsu_control_safe.mem_read  = 1'b0;
             lsu_control_safe.mem_write = 1'b0;
         end
@@ -330,6 +446,8 @@ module execution_stage #(
                           in_if.valid && in_if.ready &&
                           (in_if.data.fu_sel == FU_ALU) &&
                           in_if.data.control_signal.alu.csr_en &&
+                          !issue0_fp_disabled_candidate &&
+                          !csr_privilege_illegal &&
                           ((in_if.data.control_signal.alu.csr_op == CSR_RW) ||
                            (csr_operand != '0));
     assign fp_csr_selected =
@@ -341,44 +459,90 @@ module execution_stage #(
     assign fp_csr_write_addr = in_if.data.control_signal.alu.csr_addr;
     assign fp_csr_write_data = csr_operand;
     assign selected_csr_result = fp_csr_selected ? fp_csr_rdata : csr_result;
-    assign sys_issue_now = in_if.valid && in_if.ready &&
+    assign sys_issue_now = !mret_flush &&
+                           !interrupt_take &&
+                           !commit_trap_fire &&
+                           in_if.valid && in_if.ready &&
                            (in_if.data.fu_sel == FU_ALU) &&
                            in_if.data.control_signal.alu.sys_en;
-    assign illegal_trap_en = sys_issue_now &&
-                             (in_if.data.control_signal.alu.sys_op == SYS_ILLEGAL);
-    assign trap_write_en = sys_issue_now &&
-                           ((in_if.data.control_signal.alu.sys_op == SYS_ECALL) ||
-                            (in_if.data.control_signal.alu.sys_op == SYS_EBREAK) ||
-                            (in_if.data.control_signal.alu.sys_op == SYS_ILLEGAL));
+    assign csr_privilege_illegal =
+        !mret_flush &&
+        !interrupt_take &&
+        !commit_trap_fire &&
+        in_if.valid && in_if.ready &&
+        (in_if.data.fu_sel == FU_ALU) &&
+        in_if.data.control_signal.alu.csr_en &&
+        (csr_privilege_mode <
+         in_if.data.control_signal.alu.csr_addr[9:8]);
+    assign mret_privilege_illegal =
+        sys_issue_now &&
+        (in_if.data.control_signal.alu.sys_op == SYS_MRET) &&
+        (csr_privilege_mode != PRV_M);
+    assign wfi_privilege_illegal =
+        sys_issue_now &&
+        (in_if.data.control_signal.alu.sys_op == SYS_WFI) &&
+        (csr_privilege_mode != PRV_M) &&
+        csr_mstatus_value[21];
+    assign illegal_trap_en =
+        (sys_issue_now &&
+         (in_if.data.control_signal.alu.sys_op == SYS_ILLEGAL)) ||
+        issue0_fp_disabled_fire ||
+        csr_privilege_illegal ||
+        mret_privilege_illegal ||
+        wfi_privilege_illegal;
+    assign trap_write_en =
+        illegal_trap_en ||
+        (sys_issue_now &&
+         ((in_if.data.control_signal.alu.sys_op == SYS_ECALL) ||
+          (in_if.data.control_signal.alu.sys_op == SYS_EBREAK)));
+    assign commit_trap_fire = (commit_trap_en === 1'b1);
     assign trap_mcause = illegal_trap_en ? MCAUSE_ILLEGAL :
                          (in_if.data.control_signal.alu.sys_op == SYS_EBREAK) ?
-                         MCAUSE_EBREAK : MCAUSE_ECALL_M;
+                         MCAUSE_EBREAK :
+                         (csr_privilege_mode == PRV_U) ?
+                         MCAUSE_ECALL_U : MCAUSE_ECALL_M;
     always_comb begin
         trap_mtval = 32'b0;
         if (illegal_trap_en) begin
             trap_mtval = in_if.data.datapath.instr;
         end else if (branch_addr_misaligned_now) begin
             trap_mtval = branch_target;
-        end else if (mem_addr_misaligned_now) begin
+        end else if (mem_addr_misaligned_now || mem_access_fault_now) begin
             trap_mtval = mem_eff_addr;
         end
     end
-    assign sync_exception_write_en = trap_write_en ||
+    assign sync_exception_write_en =
+                                    !PRECISE_SYSTEM_EXCEPTIONS &&
+                                    (trap_write_en ||
                                      branch_addr_misaligned_now ||
-                                     mem_addr_misaligned_now;
-    assign csr_trap_write_en = sync_exception_write_en || interrupt_take;
+                                     mem_addr_misaligned_now ||
+                                     mem_access_fault_now);
+    assign csr_trap_write_en = sync_exception_write_en ||
+                               commit_trap_fire ||
+                               interrupt_take;
     assign csr_mret_en       = !interrupt_take &&
                                sys_issue_now &&
-                               (in_if.data.control_signal.alu.sys_op == SYS_MRET);
+                               (in_if.data.control_signal.alu.sys_op == SYS_MRET) &&
+                               !mret_privilege_illegal;
+    assign branch_pipeline_flush = mret_flush ||
+                                    interrupt_take ||
+                                    commit_trap_fire;
     assign csr_trap_mepc     = interrupt_take ? interrupt_mepc :
-                               mem_addr_misaligned_now ? selected_mem_datapath.pc :
+                               commit_trap_fire ? commit_trap_mepc :
+                               (mem_addr_misaligned_now || mem_access_fault_now) ?
+                                                        selected_mem_datapath.pc :
                                                         in_if.data.datapath.pc;
     assign csr_trap_mcause   = interrupt_take ? interrupt_mcause :
+                                commit_trap_fire ? commit_trap_mcause :
                                 branch_addr_misaligned_now ? MCAUSE_INSTR_ADDR_MISALIGNED :
                                 mem_load_misaligned_now ? MCAUSE_LOAD_ADDR_MISALIGNED :
                                 mem_store_misaligned_now ? MCAUSE_STORE_ADDR_MISALIGNED :
+                                mem_load_access_fault_now ? MCAUSE_LOAD_ACCESS_FAULT :
+                                mem_store_access_fault_now ? MCAUSE_STORE_ACCESS_FAULT :
                                 trap_mcause;
-    assign csr_trap_mtval    = interrupt_take ? 32'b0 : trap_mtval;
+    assign csr_trap_mtval    = interrupt_take ? 32'b0 :
+                               commit_trap_fire ? commit_trap_mtval :
+                                                  trap_mtval;
     assign mtvec_base         = {csr_mtvec_value[WIDTH-1:2], 2'b00};
     assign interrupt_cause_index = interrupt_mcause & 32'h7fff_ffff;
     assign exception_vector_pc   = mtvec_base;
@@ -478,17 +642,29 @@ module execution_stage #(
         fp_long_select_lane1 ? in1_if.data.datapath :
                                in_if.data.datapath;
     assign fp_long_out_ready = !lsu_resp_valid && !fp0_out_valid;
+    assign fence_candidate =
+        in_if.valid &&
+        (in_if.data.fu_sel == FU_ALU) &&
+        in_if.data.control_signal.alu.sys_en &&
+        (in_if.data.control_signal.alu.sys_op == SYS_FENCE);
+    assign memory_quiescent = lsu_idle;
     assign in_if.ready =
         !in_if.valid ||
-        (issue0_fp_long_candidate ?
+        (issue0_fp_disabled_candidate ?
+             (!fp0_out_valid &&
+              !fp_long_out_valid &&
+              !lsu_resp_valid) :
+         issue0_fp_long_candidate ?
              fp_long_in_ready :
          issue0_fp_candidate ?
              fp0_in_ready :
              (!fp0_out_valid &&
               !fp_long_out_valid &&
               !lsu_resp_valid &&
+              (!fence_candidate || lsu_idle) &&
               ((in_if.data.fu_sel != FU_MEM) ||
                mem_addr_misaligned_candidate ||
+               mem_access_fault_candidate ||
                lsu_req_ready)));
 
     alu u_alu (
@@ -512,7 +688,8 @@ module execution_stage #(
     ) u_fp_pipe0 (
         .clk                  (in_if.clk),
         .rst_n                (in_if.rst_n),
-        .flush                (interrupt_take),
+        .flush                (interrupt_take || commit_trap_fire ||
+                               mret_flush),
         .squash_en            (branch_squash_now),
         .squash_checkpoint_id (resolve_cp_id_now),
         .resolve_en           (resolve_now),
@@ -537,7 +714,8 @@ module execution_stage #(
     ) u_fp_pipe1 (
         .clk                  (in_if.clk),
         .rst_n                (in_if.rst_n),
-        .flush                (interrupt_take),
+        .flush                (interrupt_take || commit_trap_fire ||
+                               mret_flush),
         .squash_en            (branch_squash_now),
         .squash_checkpoint_id (resolve_cp_id_now),
         .resolve_en           (resolve_now),
@@ -563,7 +741,8 @@ module execution_stage #(
     ) u_fp_div_sqrt (
         .clk                  (in_if.clk),
         .rst_n                (in_if.rst_n),
-        .flush                (interrupt_take),
+        .flush                (interrupt_take || commit_trap_fire ||
+                               mret_flush),
         .squash_en            (branch_squash_now),
         .squash_checkpoint_id (resolve_cp_id_now),
         .resolve_en           (resolve_now),
@@ -586,7 +765,9 @@ module execution_stage #(
         .busy                 (fp_long_busy)
     );
 
-    csr_file u_csr_file (
+    csr_file #(
+        .RESET_FS_INITIAL(RESET_FS_INITIAL)
+    ) u_csr_file (
         .clk       (in_if.clk),
         .rst_n     (in_if.rst_n),
         .csr_en    (machine_csr_write_en),
@@ -606,16 +787,23 @@ module execution_stage #(
         .mstatus_value(csr_mstatus_value),
         .mie_value (csr_mie_value),
         .mtvec_value(csr_mtvec_value),
-        .mepc_value(csr_mepc_value)
+        .mepc_value(csr_mepc_value),
+        .current_privilege(csr_privilege_mode),
+        .pmpcfg0_value(csr_pmpcfg0_value),
+        .pmpaddr0_value(csr_pmpaddr0_value),
+        .pmpcfg_values(csr_pmpcfg_values),
+        .pmpaddr_values(csr_pmpaddr_values)
     );
 
     lsu #(
-        .MEM_WORDS(MEM_WORDS)
+        .MEM_WORDS(MEM_WORDS),
+        .DATA_BASE_ADDR(DATA_BASE_ADDR)
     ) u_lsu (
         .clk           (in_if.clk),
         .rst_n         (in_if.rst_n),
         .req_valid     (lsu_req_valid),
         .req_ready     (lsu_req_ready),
+        .flush         (interrupt_take || commit_trap_fire || mret_flush),
         .squash_en     (branch_squash_now),
         .squash_checkpoint_id(resolve_cp_id_now),
         .resolve_en    (resolve_now),
@@ -631,7 +819,8 @@ module execution_stage #(
         .resp_preg     (lsu_resp_preg),
         .resp_reg_write(lsu_resp_reg_write),
         .resp_dest_is_fp(lsu_resp_dest_is_fp),
-        .resp_result   (lsu_resp_result)
+        .resp_result   (lsu_resp_result),
+        .idle          (lsu_idle)
     );
 
     branch_unit u_branch (
@@ -661,16 +850,26 @@ module execution_stage #(
             complete_tag   <= '0;
             complete_result <= '0;
             complete_fp_flags <= '0;
+            complete_exception_valid <= 1'b0;
+            complete_exception_cause <= '0;
+            complete_exception_tval <= '0;
             branch_complete_valid <= 1'b0;
             branch_complete_tag   <= '0;
             branch_complete_result <= '0;
+            branch_complete_exception_valid <= 1'b0;
+            branch_complete_exception_cause <= '0;
+            branch_complete_exception_tval <= '0;
             lane1_complete_valid <= 1'b0;
             lane1_complete_tag   <= '0;
             lane1_complete_result <= '0;
             lane1_complete_fp_flags <= '0;
+            lane1_complete_exception_valid <= 1'b0;
+            lane1_complete_exception_cause <= '0;
+            lane1_complete_exception_tval <= '0;
             pc_src    <= 1'b0;
             pc_branch <= '0;
             recover_rat <= 1'b0;
+            mret_flush <= 1'b0;
             branch_resolve <= 1'b0;
             resolve_checkpoint_id <= '0;
             bp_update_valid <= 1'b0;
@@ -706,25 +905,65 @@ module execution_stage #(
             complete_tag   <= '0;
             complete_result <= '0;
             complete_fp_flags <= '0;
-            branch_complete_valid <= br_pipe_valid[BR_RESOLVE_LAT-1];
-            branch_complete_tag   <= br_pipe_valid[BR_RESOLVE_LAT-1] ? br_pipe_tag[BR_RESOLVE_LAT-1] : '0;
+            complete_exception_valid <= 1'b0;
+            complete_exception_cause <= '0;
+            complete_exception_tval <= '0;
+            branch_complete_valid <= !branch_pipeline_flush &&
+                                     br_pipe_valid[BR_RESOLVE_LAT-1];
+            branch_complete_tag   <= (!branch_pipeline_flush &&
+                                      br_pipe_valid[BR_RESOLVE_LAT-1]) ?
+                                     br_pipe_tag[BR_RESOLVE_LAT-1] : '0;
             branch_complete_result <= '0;
+            branch_complete_exception_valid <= 1'b0;
+            branch_complete_exception_cause <= '0;
+            branch_complete_exception_tval <= '0;
             lane1_complete_valid <= 1'b0;
             lane1_complete_tag   <= '0;
             lane1_complete_result <= '0;
             lane1_complete_fp_flags <= '0;
-            branch_resolve <= br_pipe_valid[BR_RESOLVE_LAT-1];
-            resolve_checkpoint_id <= br_pipe_valid[BR_RESOLVE_LAT-1] ? br_pipe_cp_id[BR_RESOLVE_LAT-1] : '0;
-            pc_src    <= br_pipe_valid[BR_RESOLVE_LAT-1] && br_pipe_pc_src[BR_RESOLVE_LAT-1];
-            pc_branch <= br_pipe_valid[BR_RESOLVE_LAT-1] ? br_pipe_pc_branch[BR_RESOLVE_LAT-1] : '0;
-            recover_rat <= br_pipe_valid[BR_RESOLVE_LAT-1] && br_pipe_pc_src[BR_RESOLVE_LAT-1];
-            bp_update_valid <= br_pipe_valid[BR_RESOLVE_LAT-1] && br_pipe_bp_valid[BR_RESOLVE_LAT-1];
-            bp_update_pc    <= br_pipe_valid[BR_RESOLVE_LAT-1] ? br_pipe_bp_pc[BR_RESOLVE_LAT-1] : '0;
-            bp_update_taken <= br_pipe_valid[BR_RESOLVE_LAT-1] && br_pipe_bp_taken[BR_RESOLVE_LAT-1];
-            bp_update_is_jalr <= br_pipe_valid[BR_RESOLVE_LAT-1] && br_pipe_bp_is_jalr[BR_RESOLVE_LAT-1];
-            bp_update_target <= br_pipe_valid[BR_RESOLVE_LAT-1] ? br_pipe_bp_target[BR_RESOLVE_LAT-1] : '0;
+            lane1_complete_exception_valid <= 1'b0;
+            lane1_complete_exception_cause <= '0;
+            lane1_complete_exception_tval <= '0;
+            branch_resolve <= !branch_pipeline_flush &&
+                              br_pipe_valid[BR_RESOLVE_LAT-1];
+            resolve_checkpoint_id <= (!branch_pipeline_flush &&
+                                      br_pipe_valid[BR_RESOLVE_LAT-1]) ?
+                                     br_pipe_cp_id[BR_RESOLVE_LAT-1] : '0;
+            pc_src    <= !branch_pipeline_flush &&
+                         br_pipe_valid[BR_RESOLVE_LAT-1] &&
+                         br_pipe_pc_src[BR_RESOLVE_LAT-1];
+            pc_branch <= (!branch_pipeline_flush &&
+                          br_pipe_valid[BR_RESOLVE_LAT-1]) ?
+                         br_pipe_pc_branch[BR_RESOLVE_LAT-1] : '0;
+            recover_rat <= !branch_pipeline_flush &&
+                           br_pipe_valid[BR_RESOLVE_LAT-1] &&
+                           br_pipe_pc_src[BR_RESOLVE_LAT-1];
+            mret_flush <= 1'b0;
+            bp_update_valid <= !branch_pipeline_flush &&
+                               br_pipe_valid[BR_RESOLVE_LAT-1] &&
+                               br_pipe_bp_valid[BR_RESOLVE_LAT-1];
+            bp_update_pc    <= (!branch_pipeline_flush &&
+                                br_pipe_valid[BR_RESOLVE_LAT-1]) ?
+                               br_pipe_bp_pc[BR_RESOLVE_LAT-1] : '0;
+            bp_update_taken <= !branch_pipeline_flush &&
+                               br_pipe_valid[BR_RESOLVE_LAT-1] &&
+                               br_pipe_bp_taken[BR_RESOLVE_LAT-1];
+            bp_update_is_jalr <= !branch_pipeline_flush &&
+                                 br_pipe_valid[BR_RESOLVE_LAT-1] &&
+                                 br_pipe_bp_is_jalr[BR_RESOLVE_LAT-1];
+            bp_update_target <= (!branch_pipeline_flush &&
+                                 br_pipe_valid[BR_RESOLVE_LAT-1]) ?
+                                br_pipe_bp_target[BR_RESOLVE_LAT-1] : '0;
 
-            if (fp1_out_valid) begin
+            if (issue1_fp_disabled_fire) begin
+                lane1_complete_valid <= 1'b1;
+                lane1_complete_tag <= in1_if.data.datapath.rob_tag;
+                lane1_complete_result <= '0;
+                lane1_complete_exception_valid <= 1'b1;
+                lane1_complete_exception_cause <= MCAUSE_ILLEGAL;
+                lane1_complete_exception_tval <=
+                    in1_if.data.datapath.instr;
+            end else if (fp1_out_valid) begin
                 lane1_complete_valid <= 1'b1;
                 lane1_complete_tag <= fp1_out_tag;
                 lane1_complete_result <= fp1_out_result;
@@ -755,13 +994,35 @@ module execution_stage #(
                 end
             end
 
-            if (issue1_mem_fire && mem_addr_misaligned_now) begin
+            if (issue1_mem_fire &&
+                (mem_addr_misaligned_now || mem_access_fault_now)) begin
                 lane1_complete_valid <= 1'b1;
                 lane1_complete_tag   <= selected_mem_datapath.rob_tag;
                 lane1_complete_result <= '0;
-                pc_src    <= 1'b1;
-                pc_branch <= exception_vector_pc;
-                recover_rat <= 1'b0;
+                if (PRECISE_SYSTEM_EXCEPTIONS) begin
+                    lane1_complete_exception_valid <= 1'b1;
+                    lane1_complete_exception_cause <=
+                        mem_load_misaligned_now ?
+                        MCAUSE_LOAD_ADDR_MISALIGNED :
+                        mem_store_misaligned_now ?
+                        MCAUSE_STORE_ADDR_MISALIGNED :
+                        mem_load_access_fault_now ?
+                        MCAUSE_LOAD_ACCESS_FAULT :
+                        MCAUSE_STORE_ACCESS_FAULT;
+                    lane1_complete_exception_tval <= mem_eff_addr;
+                end else begin
+                    pc_src    <= 1'b1;
+                    pc_branch <= exception_vector_pc;
+                    recover_rat <= 1'b0;
+                end
+            end
+
+            if (commit_trap_fire) begin
+                pc_src       <= 1'b1;
+                pc_branch    <= exception_vector_pc;
+                recover_rat  <= 1'b0;
+                branch_resolve <= 1'b0;
+                bp_update_valid <= 1'b0;
             end
 
             if (interrupt_take) begin
@@ -773,17 +1034,31 @@ module execution_stage #(
             end
 
             for (int i = 0; i < BR_RESOLVE_LAT; i++) begin
-                br_pipe_valid[i]      <= br_pipe_valid_n[i];
-                br_pipe_pc_src[i]     <= br_pipe_pc_src_n[i];
-                br_pipe_tag[i]        <= br_pipe_tag_n[i];
-                br_pipe_cp_id[i]      <= br_pipe_cp_id_n[i];
-                br_pipe_spec_mask[i]  <= br_pipe_spec_mask_n[i];
-                br_pipe_pc_branch[i]  <= br_pipe_pc_branch_n[i];
-                br_pipe_bp_valid[i]   <= br_pipe_bp_valid_n[i];
-                br_pipe_bp_pc[i]      <= br_pipe_bp_pc_n[i];
-                br_pipe_bp_taken[i]   <= br_pipe_bp_taken_n[i];
-                br_pipe_bp_is_jalr[i] <= br_pipe_bp_is_jalr_n[i];
-                br_pipe_bp_target[i]  <= br_pipe_bp_target_n[i];
+                if (branch_pipeline_flush) begin
+                    br_pipe_valid[i]      <= 1'b0;
+                    br_pipe_pc_src[i]     <= 1'b0;
+                    br_pipe_tag[i]        <= '0;
+                    br_pipe_cp_id[i]      <= '0;
+                    br_pipe_spec_mask[i]  <= '0;
+                    br_pipe_pc_branch[i]  <= '0;
+                    br_pipe_bp_valid[i]   <= 1'b0;
+                    br_pipe_bp_pc[i]      <= '0;
+                    br_pipe_bp_taken[i]   <= 1'b0;
+                    br_pipe_bp_is_jalr[i] <= 1'b0;
+                    br_pipe_bp_target[i]  <= '0;
+                end else begin
+                    br_pipe_valid[i]      <= br_pipe_valid_n[i];
+                    br_pipe_pc_src[i]     <= br_pipe_pc_src_n[i];
+                    br_pipe_tag[i]        <= br_pipe_tag_n[i];
+                    br_pipe_cp_id[i]      <= br_pipe_cp_id_n[i];
+                    br_pipe_spec_mask[i]  <= br_pipe_spec_mask_n[i];
+                    br_pipe_pc_branch[i]  <= br_pipe_pc_branch_n[i];
+                    br_pipe_bp_valid[i]   <= br_pipe_bp_valid_n[i];
+                    br_pipe_bp_pc[i]      <= br_pipe_bp_pc_n[i];
+                    br_pipe_bp_taken[i]   <= br_pipe_bp_taken_n[i];
+                    br_pipe_bp_is_jalr[i] <= br_pipe_bp_is_jalr_n[i];
+                    br_pipe_bp_target[i]  <= br_pipe_bp_target_n[i];
+                end
             end
 
             if (lsu_resp_valid) begin
@@ -830,8 +1105,16 @@ module execution_stage #(
             end
 
             if (!lsu_resp_valid && !fp0_out_valid && !fp_long_out_valid &&
+                !mret_flush &&
                 !interrupt_take && in_if.valid && in_if.ready) begin
-                unique case (in_if.data.fu_sel)
+                if (issue0_fp_disabled_fire) begin
+                    complete_valid <= 1'b1;
+                    complete_tag <= in_if.data.datapath.rob_tag;
+                    complete_result <= '0;
+                    complete_exception_valid <= 1'b1;
+                    complete_exception_cause <= MCAUSE_ILLEGAL;
+                    complete_exception_tval <= in_if.data.datapath.instr;
+                end else unique case (in_if.data.fu_sel)
                     FU_ALU: begin
                         if (issue0_fp_candidate ||
                             issue0_fp_long_candidate) begin
@@ -846,18 +1129,72 @@ module execution_stage #(
                                 SYS_ECALL,
                                 SYS_EBREAK,
                                 SYS_ILLEGAL: begin
-                                    pc_src    <= 1'b1;
-                                    pc_branch <= exception_vector_pc;
-                                    recover_rat <= 1'b0;
+                                    if (PRECISE_SYSTEM_EXCEPTIONS) begin
+                                        complete_exception_valid <= 1'b1;
+                                        complete_exception_cause <= trap_mcause;
+                                        complete_exception_tval  <= trap_mtval;
+                                    end else begin
+                                        pc_src    <= 1'b1;
+                                        pc_branch <= exception_vector_pc;
+                                        recover_rat <= 1'b0;
+                                    end
                                 end
                                 SYS_MRET: begin
-                                    pc_src    <= 1'b1;
-                                    pc_branch <= csr_mepc_value;
-                                    recover_rat <= 1'b0;
+                                    if (mret_privilege_illegal) begin
+                                        if (PRECISE_SYSTEM_EXCEPTIONS) begin
+                                            complete_exception_valid <= 1'b1;
+                                            complete_exception_cause <=
+                                                MCAUSE_ILLEGAL;
+                                            complete_exception_tval <=
+                                                in_if.data.datapath.instr;
+                                        end else begin
+                                            pc_src    <= 1'b1;
+                                            pc_branch <= exception_vector_pc;
+                                            recover_rat <= 1'b0;
+                                        end
+                                    end else begin
+                                        pc_src    <= 1'b1;
+                                        pc_branch <= csr_mepc_value;
+                                        recover_rat <= 1'b0;
+                                        mret_flush <= 1'b1;
+                                    end
+                                end
+                                SYS_FENCE: begin
+                                    // in_if.ready guarantees that all older
+                                    // memory side effects are visible in the
+                                    // local cache before this completes.
+                                end
+                                SYS_WFI: begin
+                                    if (wfi_privilege_illegal) begin
+                                        if (PRECISE_SYSTEM_EXCEPTIONS) begin
+                                            complete_exception_valid <= 1'b1;
+                                            complete_exception_cause <= MCAUSE_ILLEGAL;
+                                            complete_exception_tval <=
+                                                in_if.data.datapath.instr;
+                                        end else begin
+                                            pc_src      <= 1'b1;
+                                            pc_branch   <= exception_vector_pc;
+                                            recover_rat <= 1'b0;
+                                        end
+                                    end
                                 end
                                 default: begin
                                 end
                             endcase
+                        end else if (csr_privilege_illegal) begin
+                            complete_valid <= 1'b1;
+                            complete_tag   <= in_if.data.datapath.rob_tag;
+                            complete_result <= '0;
+                            if (PRECISE_SYSTEM_EXCEPTIONS) begin
+                                complete_exception_valid <= 1'b1;
+                                complete_exception_cause <= MCAUSE_ILLEGAL;
+                                complete_exception_tval <=
+                                    in_if.data.datapath.instr;
+                            end else begin
+                                pc_src    <= 1'b1;
+                                pc_branch <= exception_vector_pc;
+                                recover_rat <= 1'b0;
+                            end
                         end else if (in_if.data.control_signal.alu.reg_write) begin
                             complete_valid <= 1'b1;
                             complete_tag   <= in_if.data.datapath.rob_tag;
@@ -878,13 +1215,26 @@ module execution_stage #(
                     end
 
                     FU_MEM: begin
-                        if (mem_addr_misaligned_now) begin
+                        if (mem_addr_misaligned_now || mem_access_fault_now) begin
                             complete_valid <= 1'b1;
                             complete_tag   <= in_if.data.datapath.rob_tag;
                             complete_result <= '0;
-                            pc_src    <= 1'b1;
-                            pc_branch <= exception_vector_pc;
-                            recover_rat <= 1'b0;
+                            if (PRECISE_SYSTEM_EXCEPTIONS) begin
+                                complete_exception_valid <= 1'b1;
+                                complete_exception_cause <=
+                                    mem_load_misaligned_now ?
+                                    MCAUSE_LOAD_ADDR_MISALIGNED :
+                                    mem_store_misaligned_now ?
+                                    MCAUSE_STORE_ADDR_MISALIGNED :
+                                    mem_load_access_fault_now ?
+                                    MCAUSE_LOAD_ACCESS_FAULT :
+                                    MCAUSE_STORE_ACCESS_FAULT;
+                                complete_exception_tval <= mem_eff_addr;
+                            end else begin
+                                pc_src    <= 1'b1;
+                                pc_branch <= exception_vector_pc;
+                                recover_rat <= 1'b0;
+                            end
                         end
                     end
 
@@ -893,11 +1243,19 @@ module execution_stage #(
                             complete_valid <= 1'b1;
                             complete_tag   <= in_if.data.datapath.rob_tag;
                             complete_result <= '0;
-                            branch_resolve <= 1'b1;
-                            resolve_checkpoint_id <= in_if.data.datapath.checkpoint_id;
-                            pc_src    <= 1'b1;
-                            pc_branch <= exception_vector_pc;
-                            recover_rat <= 1'b0;
+                            if (PRECISE_SYSTEM_EXCEPTIONS) begin
+                                complete_exception_valid <= 1'b1;
+                                complete_exception_cause <=
+                                    MCAUSE_INSTR_ADDR_MISALIGNED;
+                                complete_exception_tval <= branch_target;
+                            end else begin
+                                branch_resolve <= 1'b1;
+                                resolve_checkpoint_id <=
+                                    in_if.data.datapath.checkpoint_id;
+                                pc_src    <= 1'b1;
+                                pc_branch <= exception_vector_pc;
+                                recover_rat <= 1'b0;
+                            end
                         end else if (in_if.data.control_signal.branch.jump &&
                             (in_if.data.datapath.dest_is_fp ||
                              (in_if.data.datapath.new_des_preg != '0))) begin

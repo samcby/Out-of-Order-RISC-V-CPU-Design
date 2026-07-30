@@ -16,14 +16,23 @@ module rob_2w (
     input  defines_pkg::rob_tag_t          complete_tag0,
     input  logic [defines_pkg::WIDTH-1:0]  complete_result0,
     input  logic [4:0]                     complete_fp_flags0,
+    input  logic                           complete_exception_valid0,
+    input  logic [defines_pkg::WIDTH-1:0]  complete_exception_cause0,
+    input  logic [defines_pkg::WIDTH-1:0]  complete_exception_tval0,
     input  logic                           complete_en1,
     input  defines_pkg::rob_tag_t          complete_tag1,
     input  logic [defines_pkg::WIDTH-1:0]  complete_result1,
     input  logic [4:0]                     complete_fp_flags1,
+    input  logic                           complete_exception_valid1,
+    input  logic [defines_pkg::WIDTH-1:0]  complete_exception_cause1,
+    input  logic [defines_pkg::WIDTH-1:0]  complete_exception_tval1,
     input  logic                           complete_en2,
     input  defines_pkg::rob_tag_t          complete_tag2,
     input  logic [defines_pkg::WIDTH-1:0]  complete_result2,
     input  logic [4:0]                     complete_fp_flags2,
+    input  logic                           complete_exception_valid2,
+    input  logic [defines_pkg::WIDTH-1:0]  complete_exception_cause2,
+    input  logic [defines_pkg::WIDTH-1:0]  complete_exception_tval2,
 
     input  logic                           commit_en0,
     input  logic                           commit_en1,
@@ -265,18 +274,39 @@ module rob_2w (
                 entries[complete_idx0].datapath.result <= complete_result0;
                 entries[complete_idx0].datapath.fp_flags <=
                     known_flags(complete_fp_flags0);
+                if (complete_exception_valid0 === 1'b1) begin
+                    entries[complete_idx0].datapath.exception_valid <= 1'b1;
+                    entries[complete_idx0].datapath.exception_cause <=
+                        complete_exception_cause0;
+                    entries[complete_idx0].datapath.exception_tval <=
+                        complete_exception_tval0;
+                end
             end
             if (complete_en1 && complete_hit1) begin
                 entries[complete_idx1].datapath.complete <= 1'b1;
                 entries[complete_idx1].datapath.result <= complete_result1;
                 entries[complete_idx1].datapath.fp_flags <=
                     known_flags(complete_fp_flags1);
+                if (complete_exception_valid1 === 1'b1) begin
+                    entries[complete_idx1].datapath.exception_valid <= 1'b1;
+                    entries[complete_idx1].datapath.exception_cause <=
+                        complete_exception_cause1;
+                    entries[complete_idx1].datapath.exception_tval <=
+                        complete_exception_tval1;
+                end
             end
             if (complete_en2 && complete_hit2) begin
                 entries[complete_idx2].datapath.complete <= 1'b1;
                 entries[complete_idx2].datapath.result <= complete_result2;
                 entries[complete_idx2].datapath.fp_flags <=
                     known_flags(complete_fp_flags2);
+                if (complete_exception_valid2 === 1'b1) begin
+                    entries[complete_idx2].datapath.exception_valid <= 1'b1;
+                    entries[complete_idx2].datapath.exception_cause <=
+                        complete_exception_cause2;
+                    entries[complete_idx2].datapath.exception_tval <=
+                        complete_exception_tval2;
+                end
             end
 
             // 3) branch 预测正确：所有仍在飞行的指令不再依赖该 checkpoint。

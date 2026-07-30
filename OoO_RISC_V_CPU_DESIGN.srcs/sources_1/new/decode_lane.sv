@@ -60,6 +60,9 @@ module decode_lane #(
         out_data.datapath.instr       = in_data.instr;
         out_data.datapath.pred_taken  = in_data.pred_taken;
         out_data.datapath.pred_target = in_data.pred_target;
+        out_data.datapath.exception_valid = in_data.exception_valid;
+        out_data.datapath.exception_cause = in_data.exception_cause;
+        out_data.datapath.exception_tval  = in_data.exception_tval;
 
         unique case (op_code)
             7'b1000011, // FMADD
@@ -139,6 +142,22 @@ module decode_lane #(
 
         out_data.control_signal.rob_control_signal.branch = branch;
         out_data.control_signal.rob_control_signal.store  = mem_write;
+
+        // A fetch access fault is already a complete architectural exception.
+        // Preserve its PC/cause/tval, but suppress rename and all FU side
+        // effects so dispatch allocates only the corresponding ROB entry.
+        if (in_data.exception_valid) begin
+            out_data.control_signal = '0;
+            out_data.control_signal.rs_control_signal.fu_type = FU_NOP;
+            out_data.datapath.rs1 = '0;
+            out_data.datapath.rs2 = '0;
+            out_data.datapath.rs3 = '0;
+            out_data.datapath.rd  = '0;
+            out_data.datapath.src1_is_fp = 1'b0;
+            out_data.datapath.src2_is_fp = 1'b0;
+            out_data.datapath.src3_is_fp = 1'b0;
+            out_data.datapath.dest_is_fp = 1'b0;
+        end
     end
 
     imm_gen #(
