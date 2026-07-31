@@ -28,24 +28,51 @@ namespace eval ooo_regression {
             tb_fetch_packet_stage
             tb_rename_packet_stage
             tb_rs_2issue
+            tb_dispatch_packet_logic
             tb_issue_packet_arbiter
             tb_dispatch_packet_stage_dual_issue
+            tb_rat_dis_packet_splitter
             tb_reg_file_2w
             tb_rob_2w
             tb_top_packet_backend_multi_issue_suite
+            tb_top_packet_backend_mem_mem_dual_issue_smoke
             tb_top_packet_backend_lane1_squash_smoke
             tb_top_packet_backend_25test
         }
         memory {
             tb_data_cache_smoke
+            tb_data_cache_dual_bank
             tb_memory_order_queue
+            tb_load_store_queue
             tb_lsu_commit_store
+            tb_lsu_nonblocking_2p
+            tb_top_packet_backend_mem_mem_dual_issue_smoke
+            tb_top_packet_backend_memory_replay_smoke
             tb_top_packet_backend_multi_issue_suite
             tb_top_packet_backend_rv32i_smoke
             tb_top_misaligned_smoke
             tb_top_packet_backend_misaligned_smoke
             tb_top_packet_backend_access_fault_smoke
             tb_top_packet_backend_fence_smoke
+        }
+        memory_core {
+            tb_data_cache_smoke
+            tb_data_cache_dual_bank
+            tb_load_store_queue
+            tb_lsu_commit_store
+            tb_lsu_nonblocking_2p
+        }
+        memory_dual {
+            tb_data_cache_dual_bank
+            tb_load_store_queue
+            tb_lsu_nonblocking_2p
+            tb_top_packet_backend_mem_mem_dual_issue_smoke
+            tb_top_packet_backend_memory_replay_smoke
+            tb_top_packet_backend_rv32i_smoke
+            tb_top_packet_backend_25test
+        }
+        memory_replay {
+            tb_top_packet_backend_memory_replay_smoke
         }
         invariants {
             tb_reg_alias_table_2w
@@ -125,13 +152,19 @@ namespace eval ooo_regression {
             tb_rs_2issue
             tb_issue_packet_arbiter
             tb_dispatch_packet_stage_dual_issue
+            tb_rat_dis_packet_splitter
             tb_reg_file_2w
             tb_reg_alias_table_2w
             tb_free_pool_2w
             tb_rob_2w
             tb_data_cache_smoke
+            tb_data_cache_dual_bank
             tb_memory_order_queue
+            tb_load_store_queue
             tb_lsu_commit_store
+            tb_lsu_nonblocking_2p
+            tb_top_packet_backend_mem_mem_dual_issue_smoke
+            tb_top_packet_backend_memory_replay_smoke
             tb_top_packet_backend_multi_issue_suite
             tb_top_packet_backend_ipc_compare
             tb_top_packet_backend_long_stress

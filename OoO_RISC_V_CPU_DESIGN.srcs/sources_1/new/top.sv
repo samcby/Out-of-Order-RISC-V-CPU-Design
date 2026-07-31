@@ -387,6 +387,7 @@ module top (
         .commit_store_tag0(rob_head.datapath.rob_tag),
         .commit_store_valid1(1'b0),
         .commit_store_tag1('0),
+        .memory_replay_flush(1'b0),
         .wb_valid       (wb_valid),
         .wb_is_fp       (),
         .wb_preg        (wb_preg),

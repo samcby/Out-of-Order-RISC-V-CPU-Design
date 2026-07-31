@@ -2,7 +2,7 @@
 //
 // Receives issue slots from the backend and routes them to dual scalar ALUs,
 // dual fixed-latency FP pipelines, one shared DIV/SQRT unit, the branch unit,
-// and the LSU. It arbitrates returned results onto two PRF writeback paths and
+// and the dual-request LSU. It arbitrates returned results onto two PRF writeback paths and
 // multiple ROB completion paths. A completed result may wake dependents before
 // its ROB entry retires; commit remains the sole ordering point for architectural
 // side effects.
@@ -39,6 +39,7 @@ module execution_stage #(
     input  defines_pkg::rob_tag_t          commit_store_tag0,
     input  logic                           commit_store_valid1,
     input  defines_pkg::rob_tag_t          commit_store_tag1,
+    input  logic                           memory_replay_flush,
 
     output logic                           wb_valid,
     output logic                           wb_is_fp,
@@ -107,14 +108,23 @@ module execution_stage #(
     logic [4:0]       alu_fp_flags;
     logic [4:0]       alu1_fp_flags;
     lsu_control_t     lsu_control_safe;
+    lsu_control_t     lsu_control_safe1;
     logic             lsu_req_valid;
     logic             lsu_req_ready;
+    logic             lsu_req1_valid;
+    logic             lsu_req1_ready;
     logic             lsu_resp_valid;
     rob_tag_t         lsu_resp_tag;
     preg_t            lsu_resp_preg;
     logic             lsu_resp_reg_write;
     logic             lsu_resp_dest_is_fp;
     logic [WIDTH-1:0] lsu_resp_result;
+    logic             lsu_resp1_valid;
+    rob_tag_t         lsu_resp1_tag;
+    preg_t            lsu_resp1_preg;
+    logic             lsu_resp1_reg_write;
+    logic             lsu_resp1_dest_is_fp;
+    logic [WIDTH-1:0] lsu_resp1_result;
     logic             lsu_idle;
     logic [WIDTH-1:0] csr_result;
     logic [WIDTH-1:0] selected_csr_result;
@@ -148,6 +158,8 @@ module execution_stage #(
     logic             branch_addr_misaligned_now;
     logic             mem_issue_candidate;
     logic             mem_fu_fire;
+    rs_datapath_t     selected_mem_datapath;
+    rs_datapath_t     selected_mem1_datapath;
     logic [WIDTH-1:0] mem_eff_addr;
     logic             mem_load_misaligned_candidate;
     logic             mem_store_misaligned_candidate;
@@ -164,6 +176,20 @@ module execution_stage #(
     logic             mem_load_access_fault_now;
     logic             mem_store_access_fault_now;
     logic             mem_access_fault_now;
+    logic [WIDTH-1:0] mem1_eff_addr;
+    logic             mem1_load_misaligned_candidate;
+    logic             mem1_store_misaligned_candidate;
+    logic             mem1_addr_misaligned_candidate;
+    logic             mem1_load_misaligned_now;
+    logic             mem1_store_misaligned_now;
+    logic             mem1_addr_misaligned_now;
+    logic [2:0]       mem1_access_size_minus1;
+    logic [WIDTH:0]   mem1_access_last_addr;
+    logic             mem1_access_fault_candidate;
+    logic             mem1_pmp_allowed;
+    logic             mem1_load_access_fault_now;
+    logic             mem1_store_access_fault_now;
+    logic             mem1_access_fault_now;
     logic [WIDTH-1:0] branch_link_result;
     logic             branch_taken;
     logic [WIDTH-1:0] branch_target;
@@ -212,8 +238,6 @@ module execution_stage #(
     logic issue0_mem_candidate;
     logic issue0_mem_fire;
     logic fence_candidate;
-    lsu_control_t selected_mem_control;
-    rs_datapath_t selected_mem_datapath;
     logic fp0_in_ready;
     logic fp0_out_valid;
     logic fp0_out_ready;
@@ -225,6 +249,7 @@ module execution_stage #(
     logic [4:0] fp0_out_flags;
     logic fp1_in_ready;
     logic fp1_out_valid;
+    logic fp1_out_ready;
     rob_tag_t fp1_out_tag;
     preg_t fp1_out_preg;
     logic fp1_out_dest_is_fp;
@@ -336,50 +361,49 @@ module execution_stage #(
         in_if.valid &&
         !issue0_fp_disabled_candidate &&
         (in_if.data.fu_sel == FU_MEM);
-    assign selected_mem_control =
-        issue1_mem_candidate ? in1_if.data.control_signal.lsu :
-                               in_if.data.control_signal.lsu;
-    assign selected_mem_datapath =
-        issue1_mem_candidate ? in1_if.data.datapath :
-                               in_if.data.datapath;
     assign in1_if.ready =
         !in1_if.valid ||
         (!interrupt_take &&
          (issue1_fp_disabled_candidate ?
-              !fp1_out_valid :
+              (!fp1_out_valid && !lsu_resp1_valid) :
           issue1_fp_long_candidate ?
               (!issue0_fp_long_candidate && fp_long_in_ready) :
           issue1_fp_candidate ?
               fp1_in_ready :
               (!fp1_out_valid &&
+               !lsu_resp1_valid &&
                (issue1_alu_candidate ||
                 (issue1_mem_candidate &&
-                 !lsu_resp_valid &&
-                 (mem_addr_misaligned_candidate ||
-                  mem_access_fault_candidate ||
-                  lsu_req_ready))))));
+                 (mem1_addr_misaligned_candidate ||
+                  mem1_access_fault_candidate ||
+                  lsu_req1_ready))))));
     assign issue1_alu_fire = in1_if.valid && in1_if.ready && issue1_alu_candidate;
     assign issue1_mem_fire = in1_if.valid && in1_if.ready && issue1_mem_candidate;
     assign issue0_mem_fire = in_if.valid && in_if.ready && issue0_mem_candidate;
-    assign mem_issue_candidate = issue0_mem_candidate || issue1_mem_candidate;
-    assign mem_fu_fire = issue0_mem_fire || issue1_mem_fire;
-    assign mem_eff_addr = selected_mem_datapath.src1_value + selected_mem_datapath.imm;
+    assign mem_issue_candidate = issue0_mem_candidate;
+    assign mem_fu_fire = issue0_mem_fire;
+    // Retain the historical lane0 probe name used by directed testbenches.
+    assign selected_mem_datapath = in_if.data.datapath;
+    assign selected_mem1_datapath = in1_if.data.datapath;
+    assign mem_eff_addr = in_if.data.datapath.src1_value + in_if.data.datapath.imm;
     assign mem_load_misaligned_candidate =
         mem_issue_candidate &&
-        selected_mem_control.mem_read &&
-        ((((selected_mem_control.funct3 == 3'b001) ||
-           (selected_mem_control.funct3 == 3'b101)) && mem_eff_addr[0]) ||
-         ((selected_mem_control.funct3 == 3'b010) && (mem_eff_addr[1:0] != 2'b00)));
+        in_if.data.control_signal.lsu.mem_read &&
+        ((((in_if.data.control_signal.lsu.funct3 == 3'b001) ||
+           (in_if.data.control_signal.lsu.funct3 == 3'b101)) && mem_eff_addr[0]) ||
+         ((in_if.data.control_signal.lsu.funct3 == 3'b010) &&
+          (mem_eff_addr[1:0] != 2'b00)));
     assign mem_store_misaligned_candidate =
         mem_issue_candidate &&
-        selected_mem_control.mem_write &&
-        (((selected_mem_control.funct3 == 3'b001) && mem_eff_addr[0]) ||
-         ((selected_mem_control.funct3 == 3'b010) && (mem_eff_addr[1:0] != 2'b00)));
+        in_if.data.control_signal.lsu.mem_write &&
+        (((in_if.data.control_signal.lsu.funct3 == 3'b001) && mem_eff_addr[0]) ||
+         ((in_if.data.control_signal.lsu.funct3 == 3'b010) &&
+          (mem_eff_addr[1:0] != 2'b00)));
     assign mem_addr_misaligned_candidate =
         mem_load_misaligned_candidate || mem_store_misaligned_candidate;
     always_comb begin
         mem_access_size_minus1 = 3'd0;
-        unique case (selected_mem_control.funct3)
+        unique case (in_if.data.control_signal.lsu.funct3)
             3'b001,
             3'b101: mem_access_size_minus1 = 3'd1;
             3'b010: mem_access_size_minus1 = 3'd3;
@@ -402,8 +426,8 @@ module execution_stage #(
         csr_pmpaddr_values,
         mem_eff_addr,
         mem_access_size_minus1,
-        selected_mem_control.mem_read,
-        selected_mem_control.mem_write,
+        in_if.data.control_signal.lsu.mem_read,
+        in_if.data.control_signal.lsu.mem_write,
         1'b0);
     assign mem_access_fault_candidate =
         mem_issue_candidate &&
@@ -420,23 +444,100 @@ module execution_stage #(
     assign mem_load_access_fault_now =
         mem_fu_fire &&
         mem_access_fault_candidate &&
-        selected_mem_control.mem_read;
+        in_if.data.control_signal.lsu.mem_read;
     assign mem_store_access_fault_now =
         mem_fu_fire &&
         mem_access_fault_candidate &&
-        selected_mem_control.mem_write;
+        in_if.data.control_signal.lsu.mem_write;
     assign mem_access_fault_now =
         mem_load_access_fault_now || mem_store_access_fault_now;
     assign lsu_req_valid = mem_fu_fire &&
                            !mem_addr_misaligned_now &&
                            !mem_access_fault_now &&
-                           (selected_mem_control.mem_read ||
-                            selected_mem_control.mem_write);
+                           (in_if.data.control_signal.lsu.mem_read ||
+                            in_if.data.control_signal.lsu.mem_write);
     always_comb begin
-        lsu_control_safe = selected_mem_control;
+        lsu_control_safe = in_if.data.control_signal.lsu;
         if (mem_addr_misaligned_now || mem_access_fault_now) begin
             lsu_control_safe.mem_read  = 1'b0;
             lsu_control_safe.mem_write = 1'b0;
+        end
+    end
+
+    assign mem1_eff_addr =
+        in1_if.data.datapath.src1_value + in1_if.data.datapath.imm;
+    assign mem1_load_misaligned_candidate =
+        issue1_mem_candidate &&
+        in1_if.data.control_signal.lsu.mem_read &&
+        ((((in1_if.data.control_signal.lsu.funct3 == 3'b001) ||
+           (in1_if.data.control_signal.lsu.funct3 == 3'b101)) &&
+          mem1_eff_addr[0]) ||
+         ((in1_if.data.control_signal.lsu.funct3 == 3'b010) &&
+          (mem1_eff_addr[1:0] != 2'b00)));
+    assign mem1_store_misaligned_candidate =
+        issue1_mem_candidate &&
+        in1_if.data.control_signal.lsu.mem_write &&
+        (((in1_if.data.control_signal.lsu.funct3 == 3'b001) &&
+          mem1_eff_addr[0]) ||
+         ((in1_if.data.control_signal.lsu.funct3 == 3'b010) &&
+          (mem1_eff_addr[1:0] != 2'b00)));
+    assign mem1_addr_misaligned_candidate =
+        mem1_load_misaligned_candidate || mem1_store_misaligned_candidate;
+    always_comb begin
+        mem1_access_size_minus1 = 3'd0;
+        unique case (in1_if.data.control_signal.lsu.funct3)
+            3'b001,
+            3'b101: mem1_access_size_minus1 = 3'd1;
+            3'b010: mem1_access_size_minus1 = 3'd3;
+            default: mem1_access_size_minus1 = 3'd0;
+        endcase
+    end
+    assign mem1_access_last_addr =
+        {1'b0, mem1_eff_addr} +
+        {{(WIDTH-2){1'b0}}, mem1_access_size_minus1};
+    assign mem1_pmp_allowed = pmp_access_allowed(
+        mem_effective_privilege,
+        csr_pmpcfg_values,
+        csr_pmpaddr_values,
+        mem1_eff_addr,
+        mem1_access_size_minus1,
+        in1_if.data.control_signal.lsu.mem_read,
+        in1_if.data.control_signal.lsu.mem_write,
+        1'b0);
+    assign mem1_access_fault_candidate =
+        issue1_mem_candidate &&
+        !mem1_addr_misaligned_candidate &&
+        (((ENABLE_DATA_ACCESS_FAULTS &&
+           ((mem1_eff_addr < DATA_BASE_ADDR) ||
+            (mem1_access_last_addr >= data_window_end_addr)))) ||
+         (ENABLE_PMP && !mem1_pmp_allowed));
+    assign mem1_load_misaligned_now =
+        issue1_mem_fire && mem1_load_misaligned_candidate;
+    assign mem1_store_misaligned_now =
+        issue1_mem_fire && mem1_store_misaligned_candidate;
+    assign mem1_addr_misaligned_now =
+        mem1_load_misaligned_now || mem1_store_misaligned_now;
+    assign mem1_load_access_fault_now =
+        issue1_mem_fire &&
+        mem1_access_fault_candidate &&
+        in1_if.data.control_signal.lsu.mem_read;
+    assign mem1_store_access_fault_now =
+        issue1_mem_fire &&
+        mem1_access_fault_candidate &&
+        in1_if.data.control_signal.lsu.mem_write;
+    assign mem1_access_fault_now =
+        mem1_load_access_fault_now || mem1_store_access_fault_now;
+    assign lsu_req1_valid =
+        issue1_mem_fire &&
+        !mem1_addr_misaligned_now &&
+        !mem1_access_fault_now &&
+        (in1_if.data.control_signal.lsu.mem_read ||
+         in1_if.data.control_signal.lsu.mem_write);
+    always_comb begin
+        lsu_control_safe1 = in1_if.data.control_signal.lsu;
+        if (mem1_addr_misaligned_now || mem1_access_fault_now) begin
+            lsu_control_safe1.mem_read  = 1'b0;
+            lsu_control_safe1.mem_write = 1'b0;
         end
     end
     assign csr_operand = in_if.data.control_signal.alu.csr_use_imm ?
@@ -509,6 +610,8 @@ module execution_stage #(
             trap_mtval = branch_target;
         end else if (mem_addr_misaligned_now || mem_access_fault_now) begin
             trap_mtval = mem_eff_addr;
+        end else if (mem1_addr_misaligned_now || mem1_access_fault_now) begin
+            trap_mtval = mem1_eff_addr;
         end
     end
     assign sync_exception_write_en =
@@ -516,7 +619,9 @@ module execution_stage #(
                                     (trap_write_en ||
                                      branch_addr_misaligned_now ||
                                      mem_addr_misaligned_now ||
-                                     mem_access_fault_now);
+                                     mem_access_fault_now ||
+                                     mem1_addr_misaligned_now ||
+                                     mem1_access_fault_now);
     assign csr_trap_write_en = sync_exception_write_en ||
                                commit_trap_fire ||
                                interrupt_take;
@@ -526,20 +631,27 @@ module execution_stage #(
                                !mret_privilege_illegal;
     assign branch_pipeline_flush = mret_flush ||
                                     interrupt_take ||
-                                    commit_trap_fire;
+                                    commit_trap_fire ||
+                                    memory_replay_flush;
     assign csr_trap_mepc     = interrupt_take ? interrupt_mepc :
-                               commit_trap_fire ? commit_trap_mepc :
-                               (mem_addr_misaligned_now || mem_access_fault_now) ?
-                                                        selected_mem_datapath.pc :
-                                                        in_if.data.datapath.pc;
+                                commit_trap_fire ? commit_trap_mepc :
+                                (mem_addr_misaligned_now || mem_access_fault_now) ?
+                                                         in_if.data.datapath.pc :
+                                (mem1_addr_misaligned_now || mem1_access_fault_now) ?
+                                                         in1_if.data.datapath.pc :
+                                                         in_if.data.datapath.pc;
     assign csr_trap_mcause   = interrupt_take ? interrupt_mcause :
                                 commit_trap_fire ? commit_trap_mcause :
                                 branch_addr_misaligned_now ? MCAUSE_INSTR_ADDR_MISALIGNED :
                                 mem_load_misaligned_now ? MCAUSE_LOAD_ADDR_MISALIGNED :
-                                mem_store_misaligned_now ? MCAUSE_STORE_ADDR_MISALIGNED :
-                                mem_load_access_fault_now ? MCAUSE_LOAD_ACCESS_FAULT :
-                                mem_store_access_fault_now ? MCAUSE_STORE_ACCESS_FAULT :
-                                trap_mcause;
+                                 mem_store_misaligned_now ? MCAUSE_STORE_ADDR_MISALIGNED :
+                                 mem_load_access_fault_now ? MCAUSE_LOAD_ACCESS_FAULT :
+                                 mem_store_access_fault_now ? MCAUSE_STORE_ACCESS_FAULT :
+                                 mem1_load_misaligned_now ? MCAUSE_LOAD_ADDR_MISALIGNED :
+                                 mem1_store_misaligned_now ? MCAUSE_STORE_ADDR_MISALIGNED :
+                                 mem1_load_access_fault_now ? MCAUSE_LOAD_ACCESS_FAULT :
+                                 mem1_store_access_fault_now ? MCAUSE_STORE_ACCESS_FAULT :
+                                 trap_mcause;
     assign csr_trap_mtval    = interrupt_take ? 32'b0 :
                                commit_trap_fire ? commit_trap_mtval :
                                                   trap_mtval;
@@ -633,6 +745,7 @@ module execution_stage #(
     // slot-0 FP pipe, which in turn wins over the long-latency DIV/SQRT unit.
     // A losing producer observes !out_ready and retains its result safely.
     assign fp0_out_ready = !lsu_resp_valid;
+    assign fp1_out_ready = !lsu_resp1_valid;
     assign fp_long_select_lane1 =
         !issue0_fp_long_candidate && issue1_fp_long_candidate;
     assign fp_long_control =
@@ -689,7 +802,7 @@ module execution_stage #(
         .clk                  (in_if.clk),
         .rst_n                (in_if.rst_n),
         .flush                (interrupt_take || commit_trap_fire ||
-                               mret_flush),
+                               mret_flush || memory_replay_flush),
         .squash_en            (branch_squash_now),
         .squash_checkpoint_id (resolve_cp_id_now),
         .resolve_en           (resolve_now),
@@ -715,7 +828,7 @@ module execution_stage #(
         .clk                  (in_if.clk),
         .rst_n                (in_if.rst_n),
         .flush                (interrupt_take || commit_trap_fire ||
-                               mret_flush),
+                               mret_flush || memory_replay_flush),
         .squash_en            (branch_squash_now),
         .squash_checkpoint_id (resolve_cp_id_now),
         .resolve_en           (resolve_now),
@@ -726,7 +839,7 @@ module execution_stage #(
         .in_datapath          (in1_if.data.datapath),
         .fp_frm               (fp_frm_value),
         .out_valid            (fp1_out_valid),
-        .out_ready            (1'b1),
+        .out_ready            (fp1_out_ready),
         .out_tag              (fp1_out_tag),
         .out_preg             (fp1_out_preg),
         .out_dest_is_fp       (fp1_out_dest_is_fp),
@@ -742,7 +855,7 @@ module execution_stage #(
         .clk                  (in_if.clk),
         .rst_n                (in_if.rst_n),
         .flush                (interrupt_take || commit_trap_fire ||
-                               mret_flush),
+                               mret_flush || memory_replay_flush),
         .squash_en            (branch_squash_now),
         .squash_checkpoint_id (resolve_cp_id_now),
         .resolve_en           (resolve_now),
@@ -803,7 +916,8 @@ module execution_stage #(
         .rst_n         (in_if.rst_n),
         .req_valid     (lsu_req_valid),
         .req_ready     (lsu_req_ready),
-        .flush         (interrupt_take || commit_trap_fire || mret_flush),
+        .flush         (interrupt_take || commit_trap_fire || mret_flush ||
+                        memory_replay_flush),
         .squash_en     (branch_squash_now),
         .squash_checkpoint_id(resolve_cp_id_now),
         .resolve_en    (resolve_now),
@@ -813,14 +927,24 @@ module execution_stage #(
         .commit_store_valid1(commit_store_valid1),
         .commit_store_tag1(commit_store_tag1),
         .control_signal(lsu_control_safe),
-        .datapath      (selected_mem_datapath),
+        .datapath      (in_if.data.datapath),
         .resp_valid    (lsu_resp_valid),
         .resp_tag      (lsu_resp_tag),
         .resp_preg     (lsu_resp_preg),
         .resp_reg_write(lsu_resp_reg_write),
         .resp_dest_is_fp(lsu_resp_dest_is_fp),
         .resp_result   (lsu_resp_result),
-        .idle          (lsu_idle)
+        .idle          (lsu_idle),
+        .req1_valid    (lsu_req1_valid),
+        .req1_ready    (lsu_req1_ready),
+        .control_signal1(lsu_control_safe1),
+        .datapath1     (in1_if.data.datapath),
+        .resp1_valid   (lsu_resp1_valid),
+        .resp1_tag     (lsu_resp1_tag),
+        .resp1_preg    (lsu_resp1_preg),
+        .resp1_reg_write(lsu_resp1_reg_write),
+        .resp1_dest_is_fp(lsu_resp1_dest_is_fp),
+        .resp1_result  (lsu_resp1_result)
     );
 
     branch_unit u_branch (
@@ -955,7 +1079,19 @@ module execution_stage #(
                                  br_pipe_valid[BR_RESOLVE_LAT-1]) ?
                                 br_pipe_bp_target[BR_RESOLVE_LAT-1] : '0;
 
-            if (issue1_fp_disabled_fire) begin
+            if (lsu_resp1_valid) begin
+                lane1_complete_valid  <= 1'b1;
+                lane1_complete_tag    <= lsu_resp1_tag;
+                lane1_complete_result <= lsu_resp1_result;
+
+                if (lsu_resp1_reg_write) begin
+                    wb1_valid  <= 1'b1;
+                    wb1_is_fp  <= lsu_resp1_dest_is_fp;
+                    wb1_preg   <= lsu_resp1_preg;
+                    wb1_tag    <= lsu_resp1_tag;
+                    wb1_result <= lsu_resp1_result;
+                end
+            end else if (issue1_fp_disabled_fire) begin
                 lane1_complete_valid <= 1'b1;
                 lane1_complete_tag <= in1_if.data.datapath.rob_tag;
                 lane1_complete_result <= '0;
@@ -995,21 +1131,21 @@ module execution_stage #(
             end
 
             if (issue1_mem_fire &&
-                (mem_addr_misaligned_now || mem_access_fault_now)) begin
+                (mem1_addr_misaligned_now || mem1_access_fault_now)) begin
                 lane1_complete_valid <= 1'b1;
-                lane1_complete_tag   <= selected_mem_datapath.rob_tag;
+                lane1_complete_tag   <= in1_if.data.datapath.rob_tag;
                 lane1_complete_result <= '0;
                 if (PRECISE_SYSTEM_EXCEPTIONS) begin
                     lane1_complete_exception_valid <= 1'b1;
                     lane1_complete_exception_cause <=
-                        mem_load_misaligned_now ?
+                        mem1_load_misaligned_now ?
                         MCAUSE_LOAD_ADDR_MISALIGNED :
-                        mem_store_misaligned_now ?
+                        mem1_store_misaligned_now ?
                         MCAUSE_STORE_ADDR_MISALIGNED :
-                        mem_load_access_fault_now ?
+                        mem1_load_access_fault_now ?
                         MCAUSE_LOAD_ACCESS_FAULT :
                         MCAUSE_STORE_ACCESS_FAULT;
-                    lane1_complete_exception_tval <= mem_eff_addr;
+                    lane1_complete_exception_tval <= mem1_eff_addr;
                 end else begin
                     pc_src    <= 1'b1;
                     pc_branch <= exception_vector_pc;

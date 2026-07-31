@@ -54,7 +54,8 @@ module tb_top_packet_backend_long_stress;
     top_packet_backend #(
         .ENABLE_2WIDE(1'b1),
         .IMEM_DEPTH_BYTES(IMEM_DEPTH_BYTES),
-        .DMEM_WORDS(DMEM_WORDS)
+        .DMEM_WORDS(DMEM_WORDS),
+        .DMEM_BASE_ADDR(32'h00002000)
     ) dut (
         .clk(clk),
         .rst_n(rst_n),

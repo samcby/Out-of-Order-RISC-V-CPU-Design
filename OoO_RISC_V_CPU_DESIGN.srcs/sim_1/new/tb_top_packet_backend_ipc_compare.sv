@@ -316,20 +316,21 @@ module tb_top_packet_backend_ipc_compare;
         $display("---- IPC workload: memory plus ALU ----");
         reset_duts;
 
+        write_word(32'd0, 32'h000100b7); // lui x1,0x10 (data base 0x10000)
         for (i = 0; i < 8; i++) begin
             dut_dual.u_execution.u_lsu.u_data_cache.u_data_memory.mem[i] = i + 1;
             dut_single.u_execution.u_lsu.u_data_cache.u_data_memory.mem[i] = i + 1;
-            write_word(i * 8, enc_lw(5 + i, 0, i * 4));
-            write_word(i * 8 + 4, enc_addi(16 + i, 0, 100 + i));
+            write_word(32'd4 + i * 8, enc_lw(5 + i, 1, i * 4));
+            write_word(32'd8 + i * 8, enc_addi(16 + i, 0, 100 + i));
         end
-        write_word(32'd64, 32'h00000013);             // nop
-        write_word(32'd68, enc_addi(31, 0, 12'h05a)); // commit sentinel
-        write_word(32'd72, 32'h00000013);
+        write_word(32'd68, 32'h00000013);             // nop
+        write_word(32'd72, enc_addi(31, 0, 12'h05a)); // commit sentinel
         write_word(32'd76, 32'h00000013);
+        write_word(32'd80, 32'h00000013);
 
         load_en = 1'b0;
         wait_for_both(900, "memory plus ALU");
-        report_ipc("memory_plus_alu", 18);
+        report_ipc("memory_plus_alu", 19);
 
         check_ok(dual_finish_cycles < single_finish_cycles,
                  "memory plus ALU benefits from paired issue");

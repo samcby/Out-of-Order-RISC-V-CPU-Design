@@ -18,14 +18,18 @@ module tb_issue_packet_arbiter;
     pip_if #(alu_rs_t)    alu_if    (.clk(clk), .rst_n(rst_n));
     pip_if #(alu_rs_t)    alu1_if   (.clk(clk), .rst_n(rst_n));
     pip_if #(lsu_rs_t)    lsu_if    (.clk(clk), .rst_n(rst_n));
+    pip_if #(lsu_rs_t)    lsu1_if   (.clk(clk), .rst_n(rst_n));
     pip_if #(branch_rs_t) branch_if (.clk(clk), .rst_n(rst_n));
     pip_if #(issue_exe_t) issue0_if (.clk(clk), .rst_n(rst_n));
     pip_if #(issue_exe_t) issue1_if (.clk(clk), .rst_n(rst_n));
 
-    issue_packet_arbiter dut (
+    issue_packet_arbiter #(
+        .ENABLE_DUAL_MEM(1'b1)
+    ) dut (
         .alu_if(alu_if.consumer),
         .alu1_if(alu1_if.consumer),
         .lsu_if(lsu_if.consumer),
+        .lsu1_if(lsu1_if.consumer),
         .branch_if(branch_if.consumer),
         .issue0_if(issue0_if.producer),
         .issue1_if(issue1_if.producer),
@@ -57,6 +61,8 @@ module tb_issue_packet_arbiter;
         alu1_if.data = '0;
         lsu_if.valid = 1'b0;
         lsu_if.data = '0;
+        lsu1_if.valid = 1'b0;
+        lsu1_if.data = '0;
         branch_if.valid = 1'b0;
         branch_if.data = '0;
         issue0_if.ready = 1'b1;
@@ -110,6 +116,17 @@ module tb_issue_packet_arbiter;
     end
     endtask
 
+    task automatic set_lsu1(input rob_tag_t tag);
+    begin
+        lsu1_if.valid = 1'b1;
+        lsu1_if.data = '0;
+        lsu1_if.data.datapath.rob_tag = tag;
+        lsu1_if.data.datapath.pc = 32'h00002100 + {24'b0, tag};
+        lsu1_if.data.control_signal.mem_read = 1'b1;
+        #1;
+    end
+    endtask
+
     task automatic set_branch(input rob_tag_t tag);
     begin
         branch_if.valid = 1'b1;
@@ -141,6 +158,20 @@ module tb_issue_packet_arbiter;
         check_ok(issue0_if.valid && issue0_if.data.fu_sel == FU_MEM, "MEM-only issues on lane0");
         check_ok(issue0_if.data.datapath.rob_tag == 8'd2, "MEM-only preserves tag");
         check_ok(lsu_if.ready && !alu_if.ready && !alu1_if.ready && !branch_if.ready, "MEM-only ready routes to LSU");
+
+        clear_inputs();
+        set_lsu(8'd22);
+        set_lsu1(8'd23);
+        check_ok(issue0_if.valid && issue0_if.data.fu_sel == FU_MEM,
+                 "MEM+MEM places the oldest memory operation on lane0");
+        check_ok(issue0_if.data.datapath.rob_tag == 8'd22,
+                 "MEM+MEM lane0 preserves first memory tag");
+        check_ok(issue1_if.valid && issue1_if.data.fu_sel == FU_MEM,
+                 "MEM+MEM places the second memory operation on lane1");
+        check_ok(issue1_if.data.datapath.rob_tag == 8'd23,
+                 "MEM+MEM lane1 preserves second memory tag");
+        check_ok(lsu_if.ready && lsu1_if.ready,
+                 "MEM+MEM consumes both LSQ candidates");
 
         clear_inputs();
         set_branch(8'd3);

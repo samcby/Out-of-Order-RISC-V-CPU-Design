@@ -452,7 +452,13 @@ module tb_lsu_commit_store;
         flush = 1'b1;
         step_clk;
         flush = 1'b0;
-        repeat (12) step_clk;
+        wait_cycles = 0;
+        while (((dut.u_data_cache.line_data[1][0][2] != 32'h2468ace0) &&
+                (dut.u_data_cache.line_data[1][1][2] != 32'h2468ace0)) &&
+               (wait_cycles < 40)) begin
+            wait_cycles++;
+            step_clk;
+        end
         check_ok((dut.u_data_cache.line_data[1][0][2] == 32'h2468ace0) ||
                  (dut.u_data_cache.line_data[1][1][2] == 32'h2468ace0),
                  "full flush preserves and drains an older committed store");

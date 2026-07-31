@@ -32,6 +32,7 @@ module dispatch_packet_logic (
     pip_if.producer alu_if,
     pip_if.producer alu1_if,
     pip_if.producer lsu_if,
+    pip_if.producer lsu1_if,
     pip_if.producer branch_if
 );
     import defines_pkg::*;
@@ -115,8 +116,7 @@ module dispatch_packet_logic (
                                   ((in_if.data.lane0.data.rs_entry.datapath.speculation_mask != '0) ||
                                    (in_if.data.lane1.data.rs_entry.datapath.speculation_mask != '0));
 
-    assign duplicate_fu = (lane0_lsu && lane1_lsu) ||
-                          (lane0_branch && lane1_branch) ||
+    assign duplicate_fu = (lane0_branch && lane1_branch) ||
                           alu_pair_raw_dep ||
                           alu_pair_speculative;
 
@@ -155,7 +155,7 @@ module dispatch_packet_logic (
                             (lane0_branch && branch_if.ready);
     assign lane1_rs_ready = lane1_preexception || lane1_nop ||
                             (lane1_alu && (lane0_alu ? alu1_if.ready : alu_if.ready)) ||
-                            (lane1_lsu && lsu_if.ready) ||
+                            (lane1_lsu && (lane0_lsu ? lsu1_if.ready : lsu_if.ready)) ||
                             (lane1_branch && branch_if.ready);
     assign packet_has_work = (lane0_valid && !lane0_nop) ||
                              (lane1_valid && !lane1_nop);
@@ -206,6 +206,15 @@ module dispatch_packet_logic (
     assign lsu_if.data.src2_ready =
         lane0_lsu ? lane0_instr.rs_entry.src2_ready : lane1_instr.rs_entry.src2_ready;
     assign lsu_if.data.src3_ready = 1'b1;
+
+    assign lsu1_if.valid = in_if.valid && dispatch_ready &&
+                           lane0_lsu && lane1_lsu;
+    assign lsu1_if.data.control_signal =
+        lane1_instr.rs_entry.control_signal.lsu_control_signal;
+    assign lsu1_if.data.datapath = lane1_instr.rs_entry.datapath;
+    assign lsu1_if.data.src1_ready = lane1_instr.rs_entry.src1_ready;
+    assign lsu1_if.data.src2_ready = lane1_instr.rs_entry.src2_ready;
+    assign lsu1_if.data.src3_ready = 1'b1;
 
     assign branch_if.valid = in_if.valid && dispatch_ready && (lane0_branch || lane1_branch);
     assign branch_if.data.control_signal =

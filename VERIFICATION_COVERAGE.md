@@ -86,10 +86,10 @@ Status definitions:
 | Two-wide fetch, decode, rename, and dispatch | Covered | `tb_fetch_packet_stage`, `tb_decode_packet_stage`, `tb_rename_packet_stage`, `tb_dispatch_packet_stage_dual_issue` | Includes backpressure |
 | Same-packet RAW and WAW rename | Covered | `tb_rename_packet_stage`, `tb_rename_dispatch_packet_smoke` | Lane0-to-lane1 bypass |
 | `ALU + ALU` issue/writeback | Covered | `tb_rs_2issue`, `tb_top_packet_backend_multi_issue_suite` | Independent lane1 completion |
-| `MEM + ALU` issue | Covered | `tb_issue_packet_arbiter`, `tb_top_packet_backend_multi_issue_suite` | One LSU plus ALU |
+| `MEM + ALU` issue | Covered | `tb_issue_packet_arbiter`, `tb_top_packet_backend_multi_issue_suite` | One memory slot plus ALU |
 | `branch + ALU` issue | Covered | `tb_issue_packet_arbiter`, `tb_top_packet_backend_multi_issue_suite` | Branch remains older lane |
 | `branch + MEM` issue | Covered | `tb_top_packet_backend_multi_issue_suite` | Includes dependent load consumer |
-| `MEM + MEM` issue | N/A | architectural limit | One LSU |
+| `MEM + MEM` issue | Covered | `tb_issue_packet_arbiter`, `tb_top_packet_backend_mem_mem_dual_issue_smoke` | Two AGUs, two LSU requests, two completions, and in-order retirement |
 | `branch + branch` issue | N/A | architectural limit | One branch unit and one checkpoint allocation per packet |
 | Dual completion and dual commit | Covered | `tb_execution_stage_dual_alu`, `tb_rob_2w`, `tb_top_packet_backend_multi_issue_suite` | Adjacent in-order retirement |
 | Lane1 branch/JAL/JALR | Covered | `tb_top_packet_backend_multi_issue_suite` | Prediction, link, and redirect |
@@ -104,14 +104,19 @@ Status definitions:
 | --- | --- | --- | --- |
 | D-cache hit, miss, refill, and replacement | Covered | `tb_data_cache_smoke` | Two-way cache behavior |
 | Dirty victim writeback | Covered | `tb_data_cache_smoke` | Write-back path |
-| Oldest-first memory scheduling | Covered | `tb_memory_order_queue` | Queue ordering and backpressure |
+| Two-bank concurrent hits and misses | Covered | `tb_data_cache_dual_bank` | Independent bank-local refill/writeback state |
+| Same-bank request conflict | Covered | `tb_data_cache_dual_bank` | Deterministic port-0 priority and retry |
+| Split load/store queues and age ordering | Covered | `tb_load_store_queue` | Dual enqueue/issue, monotonic sequence age, and unresolved-store masks |
+| Oldest-first legacy memory scheduling | Covered | `tb_memory_order_queue` | Compatibility queue ordering and backpressure |
+| Two outstanding loads and dual completion | Covered | `tb_lsu_nonblocking_2p` | Independent cache banks and physical-register writeback |
 | Non-alias load bypass | Covered | `tb_lsu_commit_store` | Bypasses older unrelated store |
 | Full and byte-granular store forwarding | Covered | `tb_lsu_commit_store` | Youngest overlapping byte wins |
 | Partial-overlap load stall | Covered | `tb_lsu_commit_store` | Waits until committed store drains |
 | Commit-gated store visibility | Covered | `tb_lsu_commit_store`, `tb_fp_memory_bridge_smoke` | Integer and FP stores |
 | Wrong-path store suppression | Covered | `tb_lsu_commit_store`, `tb_top_packet_backend_lane1_squash_smoke` | No cache/backing-memory side effect |
-| Multiple outstanding misses | N/A | architectural limit | Blocking cache, no MSHRs |
-| Speculative load violation detection/replay | Gap | none | Loads only bypass when current disambiguation permits it |
+| Two concurrent cache misses | Covered | `tb_data_cache_dual_bank`, `tb_lsu_nonblocking_2p` | One active miss tracker per bank |
+| Multiple same-bank misses | N/A | architectural limit | A bank accepts one miss transaction at a time |
+| Speculative load violation detection/replay | Covered | `tb_load_store_queue`, `tb_top_packet_backend_memory_replay_smoke`, `tb_top_packet_backend_long_stress` | Sticky oldest-first replay survives concurrent violations, blocks retirement, restores committed state, flushes, and restarts at the load |
 | I-cache coherency and shared memory arbitration | Gap | none | No production I-cache/D-cache shared bus |
 
 ## Long-Program and Differential Evidence
@@ -136,8 +141,11 @@ The following immediate assertions are active in simulation and removed by
 | Integer RAT | x0 maps to p0; p0 remains mapped; nonzero destinations never allocate p0; dual allocations differ |
 | Integer free pool | bounded count; legal allocation/pop; disjoint mapped/free/allocated sets; unique dual allocation |
 | Checkpoints | one branch allocation per packet; no active-ID reuse; no self or inactive dependencies |
-| Store buffer | only committed, live stores reach memory; squashed stores cannot commit or send; writeback implies a valid response |
+| LSQ | lane1 issue requires lane0; replay clears on full flush; age and unresolved-store masks are checked by directed tests |
+| Store buffer and LSU | only committed, live stores reach memory; squashed stores cannot commit or send; duplicate completion tags are forbidden |
+| Banked D-cache | an even set count is required; two requests can never be accepted into the same bank in one cycle |
 | Retirement | lane1 requires lane0; consecutive order numbers; unique dual-retire tags; integer x0 is never reported written |
+| Memory replay | a violating load in either retirement lane cannot commit normally |
 
 These checks detect internal corruption at the first violating cycle rather
 than waiting for a final architectural mismatch.

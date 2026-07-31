@@ -145,24 +145,16 @@ module tb_rat_dis_packet_splitter;
         in_if.valid = 1'b1;
         out_if.ready = 1'b1;
         #1;
-        check_ok(out_if.data.lane0.valid && !out_if.data.lane1.valid,
-                 "MEM+MEM duplicate-FU packet emits lane0 first");
+        check_ok(out_if.data.lane0.valid && out_if.data.lane1.valid,
+                 "MEM+MEM packet remains 2-wide after LSQ dual enqueue");
         check_ok(out_if.data.lane0.data.rs_entry.datapath.rob_tag == rob_tag_t'(8'h22),
-                 "MEM+MEM duplicate-FU lane0 tag preserved");
-        step_clk;
-
-        in_if.valid = 1'b0;
-        #1;
-        check_ok(out_if.valid, "deferred lane remains valid");
-        check_ok(!in_if.ready, "input stalls while deferred lane is pending");
-        check_ok(!out_if.data.lane0.valid && out_if.data.lane1.valid,
-                 "deferred instruction returns as lane1");
+                 "MEM+MEM lane0 tag preserved");
         check_ok(out_if.data.lane1.data.rs_entry.datapath.rob_tag == rob_tag_t'(8'h23),
-                 "deferred lane1 tag preserved");
+                 "MEM+MEM lane1 tag preserved");
         step_clk;
 
-        set_lane(in_if.data.lane0, 1'b1, FU_MEM, rob_tag_t'(8'h28));
-        set_lane(in_if.data.lane1, 1'b1, FU_MEM, rob_tag_t'(8'h29));
+        set_lane(in_if.data.lane0, 1'b1, FU_BRANCH, rob_tag_t'(8'h28));
+        set_lane(in_if.data.lane1, 1'b1, FU_BRANCH, rob_tag_t'(8'h29));
         in_if.valid = 1'b1;
         out_if.ready = 1'b1;
         #1;
@@ -181,8 +173,8 @@ module tb_rat_dis_packet_splitter;
         check_ok(!out_if.valid, "flush clears pending deferred lane");
         step_clk;
 
-        set_lane(in_if.data.lane0, 1'b1, FU_MEM, rob_tag_t'(8'h30));
-        set_lane(in_if.data.lane1, 1'b1, FU_MEM, rob_tag_t'(8'h31));
+        set_lane(in_if.data.lane0, 1'b1, FU_BRANCH, rob_tag_t'(8'h30));
+        set_lane(in_if.data.lane1, 1'b1, FU_BRANCH, rob_tag_t'(8'h31));
         in_if.valid = 1'b1;
         out_if.ready = 1'b0;
         #1;

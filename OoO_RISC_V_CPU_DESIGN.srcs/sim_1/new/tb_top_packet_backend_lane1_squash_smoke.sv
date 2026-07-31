@@ -110,9 +110,9 @@ module tb_top_packet_backend_lane1_squash_smoke;
             if (dut.issue_if.valid && dut.issue_if.ready &&
                 dut.issue1_if.valid && dut.issue1_if.ready &&
                 (dut.issue_if.data.fu_sel == FU_BRANCH) &&
-                (dut.issue_if.data.datapath.pc == 32'd4) &&
+                (dut.issue_if.data.datapath.pc == 32'd8) &&
                 (dut.issue1_if.data.fu_sel == FU_ALU) &&
-                (dut.issue1_if.data.datapath.pc == 32'd8)) begin
+                (dut.issue1_if.data.datapath.pc == 32'd12)) begin
                 lane1_wrong_issue_count = lane1_wrong_issue_count + 1;
             end
 
@@ -139,21 +139,30 @@ module tb_top_packet_backend_lane1_squash_smoke;
 
         dut.u_execution.u_lsu.u_data_cache.u_data_memory.mem[0] = 32'd1;
 
-        write_word(32'd0,  32'h00002083); // lw   x1,0(x0)
-        write_word(32'd4,  32'h00108863); // beq  x1,x1,+16, taken after load wakes it
-        write_word(32'd8,  32'h01008513); // wrong path lane1 candidate: addi x10,x1,0x10
-        write_word(32'd12, 32'h02200593); // wrong path: addi x11,x0,0x22
-        write_word(32'd16, 32'h03300613); // wrong path: addi x12,x0,0x33
-        write_word(32'd20, 32'h05500513); // target: addi x10,x0,0x55
-        write_word(32'd24, 32'h06600593); // target: addi x11,x0,0x66
-        write_word(32'd28, 32'h00000013); // nop
+        write_word(32'd0,  32'h00010137); // lui  x2,0x10 -> 0x00010000
+        write_word(32'd4,  32'h00012083); // lw   x1,0(x2)
+        write_word(32'd8,  32'h00108863); // beq  x1,x1,+16, taken after load wakes it
+        write_word(32'd12, 32'h01008513); // wrong path lane1 candidate: addi x10,x1,0x10
+        write_word(32'd16, 32'h02200593); // wrong path: addi x11,x0,0x22
+        write_word(32'd20, 32'h03300613); // wrong path: addi x12,x0,0x33
+        write_word(32'd24, 32'h05500513); // target: addi x10,x0,0x55
+        write_word(32'd28, 32'h06600593); // target: addi x11,x0,0x66
         write_word(32'd32, 32'h00000013); // nop
+        write_word(32'd36, 32'h00000013); // nop
+        write_word(32'd40, 32'h0000006f); // jal x0,0
 
         load_en = 1'b0;
         load_addr = '0;
         load_instr_byte = '0;
 
         repeat (360) step_clk;
+
+        // Pause fetch without modifying the executed program, then let all
+        // already-dispatched instructions retire before checking ROB state.
+        load_en = 1'b1;
+        load_addr = 32'd4095;
+        load_instr_byte = 8'h00;
+        repeat (80) step_clk;
 
         a0_preg = dut.u_rename_packet.u_rat_2w.rat[10];
         a1_preg = dut.u_rename_packet.u_rat_2w.rat[11];

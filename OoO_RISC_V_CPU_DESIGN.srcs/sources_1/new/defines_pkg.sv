@@ -35,6 +35,7 @@ package defines_pkg;
     // avoid aliasing against older in-flight entries. A wider tag keeps
     // completion routing stable across longer traces with loops.
     parameter int ROB_TAG_W = 8;
+    parameter int MEM_SEQ_W = 16;
 
     parameter int RS_DEPTH = 8;     // 单个保留站的默认容量
     parameter int CHECKPOINT_NUM = 4;   // 同时跟踪4个未解决的分支
@@ -265,6 +266,7 @@ package defines_pkg;
     typedef logic [AREG_W-1:0]    areg_t;
     typedef logic [PREG_W-1:0]    preg_t;
     typedef logic [ROB_TAG_W-1:0] rob_tag_t;
+    typedef logic [MEM_SEQ_W-1:0] mem_seq_t;
     typedef logic [CHECKPOINT_W-1:0] cp_id_t;
     typedef logic [CHECKPOINT_NUM-1:0] cp_mask_t;
 
@@ -365,6 +367,7 @@ package defines_pkg;
         logic [WIDTH-1:0] src2_value;
         logic [WIDTH-1:0] src3_value;
         rob_tag_t  rob_tag;
+        mem_seq_t  mem_seq;
         logic [WIDTH-1:0] imm;
         logic [WIDTH-1:0] instr;
         logic [WIDTH-1:0] pc;

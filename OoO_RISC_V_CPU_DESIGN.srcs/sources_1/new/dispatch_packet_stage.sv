@@ -12,7 +12,8 @@
 // younger entries using their speculation masks. CSR-pending tracking limits
 // side-effecting CSR/system instructions to a safe serialized path.
 module dispatch_packet_stage #(
-    parameter bit ENABLE_2WIDE = 1'b1
+    parameter bit ENABLE_2WIDE = 1'b1,
+    parameter bit ENABLE_DUAL_MEM = 1'b0
 )(
     input  logic                           halt,
     input  logic                           lane0_src1_ready,
@@ -77,7 +78,11 @@ module dispatch_packet_stage #(
     output defines_pkg::rob_t              rob_head1,
     output logic                           rob_head1_valid,
     output logic                           rob_head1_complete,
-    output logic                           rob_empty
+    output logic                           rob_empty,
+    output logic                           memory_replay_valid,
+    output defines_pkg::rob_tag_t          memory_replay_tag,
+    output logic [defines_pkg::WIDTH-1:0]  memory_replay_pc,
+    output defines_pkg::cp_mask_t          memory_replay_speculation_mask
 );
     import defines_pkg::*;
 
@@ -86,11 +91,13 @@ module dispatch_packet_stage #(
     pip_if #(alu_rs_t)    alu_in_if     (.clk(in_if.clk), .rst_n(in_if.rst_n));
     pip_if #(alu_rs_t)    alu_in1_if    (.clk(in_if.clk), .rst_n(in_if.rst_n));
     pip_if #(lsu_rs_t)    lsu_in_if     (.clk(in_if.clk), .rst_n(in_if.rst_n));
+    pip_if #(lsu_rs_t)    lsu_in1_if    (.clk(in_if.clk), .rst_n(in_if.rst_n));
     pip_if #(branch_rs_t) branch_in_if  (.clk(in_if.clk), .rst_n(in_if.rst_n));
 
     pip_if #(alu_rs_t)    alu_out_if    (.clk(in_if.clk), .rst_n(in_if.rst_n));
     pip_if #(alu_rs_t)    alu_out1_if   (.clk(in_if.clk), .rst_n(in_if.rst_n));
     pip_if #(lsu_rs_t)    lsu_out_if    (.clk(in_if.clk), .rst_n(in_if.rst_n));
+    pip_if #(lsu_rs_t)    lsu_out1_if   (.clk(in_if.clk), .rst_n(in_if.rst_n));
     pip_if #(branch_rs_t) branch_out_if (.clk(in_if.clk), .rst_n(in_if.rst_n));
 
     logic [1:0] fu_sel;
@@ -133,6 +140,7 @@ module dispatch_packet_stage #(
         .alu_if(alu_in_if.producer),
         .alu1_if(alu_in1_if.producer),
         .lsu_if(lsu_in_if.producer),
+        .lsu1_if(lsu_in1_if.producer),
         .branch_if(branch_in_if.producer)
     );
 
@@ -158,7 +166,7 @@ module dispatch_packet_stage #(
         .out1_if(alu_out1_if.producer)
     );
 
-    memory_order_queue u_memory_order_queue (
+    load_store_queue u_load_store_queue (
         .wb_valid(wb_valid),
         .wb_is_fp(wb_is_fp),
         .wb_preg(wb_preg),
@@ -167,13 +175,27 @@ module dispatch_packet_stage #(
         .wb1_is_fp(wb1_is_fp),
         .wb1_preg(wb1_preg),
         .wb1_result(wb1_result),
+        .complete_valid0(complete_valid),
+        .complete_tag0(complete_tag),
+        .complete_valid1(lane1_complete_valid),
+        .complete_tag1(lane1_complete_tag),
+        .commit_valid0(commit_en0),
+        .commit_tag0(rob_head.datapath.rob_tag),
+        .commit_valid1(commit_en1),
+        .commit_tag1(rob_head1.datapath.rob_tag),
         .flush(flush),
         .squash_en(squash_en),
         .squash_checkpoint_id(squash_checkpoint_id),
         .resolve_en(resolve_en),
         .resolve_checkpoint_id(resolve_checkpoint_id),
-        .in_if(lsu_in_if.consumer),
-        .out_if(lsu_out_if.producer)
+        .in0_if(lsu_in_if.consumer),
+        .in1_if(lsu_in1_if.consumer),
+        .out0_if(lsu_out_if.producer),
+        .out1_if(lsu_out1_if.producer),
+        .replay_valid(memory_replay_valid),
+        .replay_tag(memory_replay_tag),
+        .replay_pc(memory_replay_pc),
+        .replay_speculation_mask(memory_replay_speculation_mask)
     );
 
     rs #(
@@ -199,11 +221,13 @@ module dispatch_packet_stage #(
     );
 
     issue_packet_arbiter #(
-        .ENABLE_2WIDE(ENABLE_2WIDE)
+        .ENABLE_2WIDE(ENABLE_2WIDE),
+        .ENABLE_DUAL_MEM(ENABLE_DUAL_MEM)
     ) u_issue_packet_arbiter (
         .alu_if(alu_out_if.consumer),
         .alu1_if(alu_out1_if.consumer),
         .lsu_if(lsu_out_if.consumer),
+        .lsu1_if(lsu_out1_if.consumer),
         .branch_if(branch_out_if.consumer),
         .issue0_if(issue_if),
         .issue1_if(issue1_if),

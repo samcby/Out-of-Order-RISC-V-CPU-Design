@@ -11,11 +11,13 @@
 // The arbiter is combinational: queue entries are removed only on the matching
 // valid && ready handshake at the execution-stage input.
 module issue_packet_arbiter #(
-    parameter bit ENABLE_2WIDE = 1'b1
+    parameter bit ENABLE_2WIDE = 1'b1,
+    parameter bit ENABLE_DUAL_MEM = 1'b0
 )(
     pip_if.consumer alu_if,
     pip_if.consumer alu1_if,
     pip_if.consumer lsu_if,
+    pip_if.consumer lsu1_if,
     pip_if.consumer branch_if,
     pip_if.producer issue0_if,
     pip_if.producer issue1_if,
@@ -34,10 +36,12 @@ module issue_packet_arbiter #(
     logic sel0_alu;
     logic sel0_alu1;
     logic sel0_lsu;
+    logic sel0_lsu1;
     logic sel0_branch;
     logic sel1_alu;
     logic sel1_alu1;
     logic sel1_lsu;
+    logic sel1_lsu1;
     logic sel1_branch;
     logic slot0_valid;
     logic slot1_valid;
@@ -64,10 +68,12 @@ module issue_packet_arbiter #(
         sel0_alu    = 1'b0;
         sel0_alu1   = 1'b0;
         sel0_lsu    = 1'b0;
+        sel0_lsu1   = 1'b0;
         sel0_branch = 1'b0;
         sel1_alu    = 1'b0;
         sel1_alu1   = 1'b0;
         sel1_lsu    = 1'b0;
+        sel1_lsu1   = 1'b0;
         sel1_branch = 1'b0;
 
         // CSR/system operations carry architectural side effects, so keep
@@ -85,6 +91,9 @@ module issue_packet_arbiter #(
             end else if (lsu_if.valid) begin
                 sel1_lsu = 1'b1;
             end
+        end else if (ENABLE_DUAL_MEM && lsu_if.valid && lsu1_if.valid) begin
+            sel0_lsu = 1'b1;
+            sel1_lsu1 = 1'b1;
         end else if (alu_if.valid && lsu_if.valid) begin
             // Keep the independently executable ALU operation in slot 0.
             // A blocked LSU request may wait in slot 1 without preventing an
@@ -100,26 +109,31 @@ module issue_packet_arbiter #(
             sel0_alu1 = 1'b1;
         end else if (lsu_if.valid) begin
             sel0_lsu = 1'b1;
+        end else if (lsu1_if.valid) begin
+            sel0_lsu1 = 1'b1;
         end
 
         if (!ENABLE_2WIDE) begin
             sel1_alu = 1'b0;
             sel1_alu1 = 1'b0;
             sel1_lsu = 1'b0;
+            sel1_lsu1 = 1'b0;
             sel1_branch = 1'b0;
         end
     end
 
-    assign slot0_valid = sel0_alu || sel0_alu1 || sel0_lsu || sel0_branch;
-    assign slot1_valid = sel1_alu || sel1_alu1 || sel1_lsu || sel1_branch;
+    assign slot0_valid = sel0_alu || sel0_alu1 || sel0_lsu ||
+                         sel0_lsu1 || sel0_branch;
+    assign slot1_valid = sel1_alu || sel1_alu1 || sel1_lsu ||
+                         sel1_lsu1 || sel1_branch;
 
     assign issue0_fu_sel = sel0_branch ? FU_BRANCH :
                            (sel0_alu || sel0_alu1) ? FU_ALU :
-                           sel0_lsu    ? FU_MEM :
+                           (sel0_lsu || sel0_lsu1) ? FU_MEM :
                                          FU_NOP;
     assign issue1_fu_sel = sel1_branch ? FU_BRANCH :
                            (sel1_alu || sel1_alu1) ? FU_ALU :
-                           sel1_lsu    ? FU_MEM :
+                           (sel1_lsu || sel1_lsu1) ? FU_MEM :
                                          FU_NOP;
 
     assign alu_if.ready =
@@ -131,6 +145,9 @@ module issue_packet_arbiter #(
     assign lsu_if.ready =
         (sel0_lsu && issue0_if.ready) ||
         (sel1_lsu && issue1_if.ready && (!slot0_valid || issue0_if.ready));
+    assign lsu1_if.ready =
+        (sel0_lsu1 && issue0_if.ready) ||
+        (sel1_lsu1 && issue1_if.ready && (!slot0_valid || issue0_if.ready));
     assign branch_if.ready =
         (sel0_branch && issue0_if.ready) ||
         (sel1_branch && issue1_if.ready && (!slot0_valid || issue0_if.ready));
@@ -152,6 +169,9 @@ module issue_packet_arbiter #(
         end else if (sel0_lsu) begin
             issue0_if.data.datapath = lsu_if.data.datapath;
             issue0_if.data.control_signal.lsu = lsu_if.data.control_signal;
+        end else if (sel0_lsu1) begin
+            issue0_if.data.datapath = lsu1_if.data.datapath;
+            issue0_if.data.control_signal.lsu = lsu1_if.data.control_signal;
         end
     end
 
@@ -172,6 +192,9 @@ module issue_packet_arbiter #(
         end else if (sel1_lsu) begin
             issue1_if.data.datapath = lsu_if.data.datapath;
             issue1_if.data.control_signal.lsu = lsu_if.data.control_signal;
+        end else if (sel1_lsu1) begin
+            issue1_if.data.datapath = lsu1_if.data.datapath;
+            issue1_if.data.control_signal.lsu = lsu1_if.data.control_signal;
         end
     end
 

@@ -162,6 +162,22 @@ module top_packet_backend #(
     logic           pc_src_exe;
     logic [WIDTH-1:0] pc_branch_exe;
     logic           recover_rat_exe;
+    logic           frontend_pc_src;
+    logic [WIDTH-1:0] frontend_pc_branch;
+    logic           memory_replay_valid;
+    rob_tag_t       memory_replay_tag;
+    logic [WIDTH-1:0] memory_replay_pc;
+    cp_mask_t       memory_replay_speculation_mask;
+    logic           memory_replay_pending_q;
+    rob_tag_t       memory_replay_tag_q;
+    logic [WIDTH-1:0] memory_replay_pc_q;
+    cp_mask_t       memory_replay_speculation_mask_q;
+    logic           memory_replay_selected_valid;
+    rob_tag_t       memory_replay_selected_tag;
+    logic [WIDTH-1:0] memory_replay_selected_pc;
+    logic           memory_replay_take;
+    logic           memory_replay_detect_head0;
+    logic           memory_replay_detect_head1;
     logic           software_irq_level;
     logic           timer_irq_level;
     logic           external_irq_level;
@@ -234,6 +250,7 @@ module top_packet_backend #(
     logic [31:0] perf_branch_alu_dual_issue_count_q;
     logic [31:0] perf_branch_mem_dual_issue_count_q;
     logic [31:0] perf_mem_alu_dual_issue_count_q;
+    logic [31:0] perf_mem_mem_dual_issue_count_q;
     logic [31:0] perf_alu_alu_dual_issue_count_q;
     logic [31:0] perf_lane1_wb_count_q;
     logic [31:0] perf_dual_wb_count_q;
@@ -245,10 +262,35 @@ module top_packet_backend #(
     logic [31:0] perf_rename_stall_count_q;
     logic [31:0] perf_dispatch_stall_count_q;
     logic [31:0] perf_active_cycle_count_q;
+    logic [31:0] perf_memory_replay_count_q;
 
+    // Only a registered replay request may drive the global flush. Keeping the
+    // raw LSQ detection out of this path avoids a replay-valid/flush loop.
+    assign memory_replay_selected_valid = memory_replay_pending_q;
+    assign memory_replay_selected_tag = memory_replay_tag_q;
+    assign memory_replay_selected_pc = memory_replay_pc_q;
+    assign memory_replay_detect_head0 =
+        rob_head_valid_i &&
+        ((memory_replay_valid &&
+          (rob_head.datapath.rob_tag == memory_replay_tag)) ||
+         (memory_replay_selected_valid &&
+          (rob_head.datapath.rob_tag == memory_replay_selected_tag)));
+    assign memory_replay_detect_head1 =
+        rob_head1_valid_i &&
+        ((memory_replay_valid &&
+          (rob_head1.datapath.rob_tag == memory_replay_tag)) ||
+         (memory_replay_selected_valid &&
+          (rob_head1.datapath.rob_tag == memory_replay_selected_tag)));
+    assign memory_replay_take =
+        memory_replay_selected_valid &&
+        rob_head_valid_i &&
+        (rob_head.datapath.rob_tag == memory_replay_selected_tag);
     assign architectural_flush = trap_commit || interrupt_take ||
-                                  mret_flush_exe;
+                                  mret_flush_exe || memory_replay_take;
     assign flush_exe = pc_src_exe || architectural_flush;
+    assign frontend_pc_src = pc_src_exe || memory_replay_take;
+    assign frontend_pc_branch =
+        memory_replay_take ? memory_replay_selected_pc : pc_branch_exe;
 
     assign lane0_branch_rename_fire =
         pipe_rd_pkt.valid && pipe_rd_pkt.ready &&
@@ -309,6 +351,7 @@ module top_packet_backend #(
     // interrupt. Once the oldest entry is incomplete, flush and replay it from
     // its ROB PC instead of waiting for all younger work to finish.
     assign interrupt_take = !trap_commit &&
+                            !memory_replay_take &&
                             !commit_en &&
                             !mret_flush_exe &&
                             interrupt_request;
@@ -337,15 +380,20 @@ module top_packet_backend #(
                             mret_resume_pc_q :
                             32'b0;
 
-    assign trap_commit = rob_head_valid_i &&
+    assign trap_commit = !memory_replay_take &&
+                         rob_head_valid_i &&
                          rob_head_complete_i &&
                          rob_head.datapath.exception_valid;
     assign commit_en    = rob_head_valid_i &&
                           rob_head_complete_i &&
-                          !rob_head.datapath.exception_valid;
+                          !rob_head.datapath.exception_valid &&
+                          !memory_replay_detect_head0 &&
+                          !memory_replay_take;
     assign wfi_commit   = commit_en &&
                           (rob_head.datapath.instr == 32'h10500073);
     assign commit_en1   = ENABLE_2WIDE && commit_en &&
+                          !memory_replay_take &&
+                          !memory_replay_detect_head1 &&
                           !wfi_commit &&
                           rob_head1_valid_i &&
                           rob_head1_complete_i &&
@@ -461,6 +509,7 @@ module top_packet_backend #(
             perf_branch_alu_dual_issue_count_q <= '0;
             perf_branch_mem_dual_issue_count_q <= '0;
             perf_mem_alu_dual_issue_count_q    <= '0;
+            perf_mem_mem_dual_issue_count_q    <= '0;
             perf_alu_alu_dual_issue_count_q    <= '0;
             perf_lane1_wb_count_q              <= '0;
             perf_dual_wb_count_q               <= '0;
@@ -472,9 +521,15 @@ module top_packet_backend #(
             perf_rename_stall_count_q          <= '0;
             perf_dispatch_stall_count_q        <= '0;
             perf_active_cycle_count_q          <= '0;
+            perf_memory_replay_count_q         <= '0;
         end else begin
             if (!load_en && !wfi_sleep_q) begin
                 perf_active_cycle_count_q <= perf_active_cycle_count_q + 1'b1;
+            end
+
+            if (memory_replay_take) begin
+                perf_memory_replay_count_q <=
+                    perf_memory_replay_count_q + 1'b1;
             end
 
             if (pipe_fd_pkt.valid && pipe_fd_pkt.ready && pipe_fd_pkt.data.lane0.valid) begin
@@ -543,6 +598,12 @@ module top_packet_backend #(
                         perf_mem_alu_dual_issue_count_q <= perf_mem_alu_dual_issue_count_q + 1'b1;
                     end
 
+                    if ((issue_if.data.fu_sel == FU_MEM) &&
+                        (issue1_if.data.fu_sel == FU_MEM)) begin
+                        perf_mem_mem_dual_issue_count_q <=
+                            perf_mem_mem_dual_issue_count_q + 1'b1;
+                    end
+
                     if ((issue_if.data.fu_sel == FU_ALU) &&
                         (issue1_if.data.fu_sel == FU_ALU)) begin
                         perf_alu_alu_dual_issue_count_q <= perf_alu_alu_dual_issue_count_q + 1'b1;
@@ -602,6 +663,47 @@ module top_packet_backend #(
         end
     end
 
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n || memory_replay_take || trap_commit ||
+            interrupt_take || mret_flush_exe) begin
+            memory_replay_pending_q <= 1'b0;
+            memory_replay_tag_q <= '0;
+            memory_replay_pc_q <= '0;
+            memory_replay_speculation_mask_q <= '0;
+        end else begin
+            if (branch_resolve_exe && memory_replay_pending_q) begin
+                if (recover_rat_exe &&
+                    memory_replay_speculation_mask_q[
+                        resolve_checkpoint_id_exe]) begin
+                    memory_replay_pending_q <= 1'b0;
+                    memory_replay_tag_q <= '0;
+                    memory_replay_pc_q <= '0;
+                    memory_replay_speculation_mask_q <= '0;
+                end else begin
+                    memory_replay_speculation_mask_q[
+                        resolve_checkpoint_id_exe] <= 1'b0;
+                end
+            end
+
+            if (memory_replay_valid &&
+                (!memory_replay_pending_q ||
+                 (memory_replay_tag != memory_replay_tag_q)) &&
+                !(recover_rat_exe &&
+                  memory_replay_speculation_mask[
+                      resolve_checkpoint_id_exe])) begin
+                memory_replay_pending_q <= 1'b1;
+                memory_replay_tag_q <= memory_replay_tag;
+                memory_replay_pc_q <= memory_replay_pc;
+                memory_replay_speculation_mask_q <=
+                    memory_replay_speculation_mask;
+                if (branch_resolve_exe) begin
+                    memory_replay_speculation_mask_q[
+                        resolve_checkpoint_id_exe] <= 1'b0;
+                end
+            end
+        end
+    end
+
 `ifndef SYNTHESIS
     logic [63:0] assert_next_retire_order_q;
 
@@ -634,6 +736,10 @@ module top_packet_backend #(
                 else $error("RETIRE: lane1 retired without lane0");
             assert (!retire_trace1.valid || retire_trace0.valid)
                 else $error("RETIRE: trace lane1 is valid without lane0");
+            assert (!(commit_en && memory_replay_detect_head0))
+                else $error("REPLAY: violating lane0 retired");
+            assert (!(commit_en1 && memory_replay_detect_head1))
+                else $error("REPLAY: violating lane1 retired");
 
             if (retire_trace0.valid) begin
                 assert (retire_trace0.order == assert_next_retire_order_q)
@@ -717,8 +823,8 @@ module top_packet_backend #(
         .load_en(load_en),
         .load_addr(load_addr),
         .load_instr_byte(load_instr_byte),
-        .pc_src(pc_src_exe),
-        .pc_branch(pc_branch_exe),
+        .pc_src(frontend_pc_src),
+        .pc_branch(frontend_pc_branch),
         .bp_update_valid(bp_update_valid_exe),
         .bp_update_pc(bp_update_pc_exe),
         .bp_update_taken(bp_update_taken_exe),
@@ -784,7 +890,8 @@ module top_packet_backend #(
     );
 
     dispatch_packet_stage #(
-        .ENABLE_2WIDE(ENABLE_2WIDE)
+        .ENABLE_2WIDE(ENABLE_2WIDE),
+        .ENABLE_DUAL_MEM(ENABLE_2WIDE)
     ) u_dispatch_packet (
         .halt(wfi_sleep_q),
         .flush(architectural_flush),
@@ -845,7 +952,11 @@ module top_packet_backend #(
         .rob_head1(rob_head1),
         .rob_head1_valid(rob_head1_valid_i),
         .rob_head1_complete(rob_head1_complete_i),
-        .rob_empty(rob_empty_i)
+        .rob_empty(rob_empty_i),
+        .memory_replay_valid(memory_replay_valid),
+        .memory_replay_tag(memory_replay_tag),
+        .memory_replay_pc(memory_replay_pc),
+        .memory_replay_speculation_mask(memory_replay_speculation_mask)
     );
 
     assign lane0_dispatch_fire = pipe_rd_pkt_d.valid && pipe_rd_pkt_d.ready &&
@@ -1027,6 +1138,7 @@ module top_packet_backend #(
         .commit_store_tag0(rob_head.datapath.rob_tag),
         .commit_store_valid1(commit_store_valid1),
         .commit_store_tag1(rob_head1.datapath.rob_tag),
+        .memory_replay_flush(memory_replay_take),
         .wb_valid(wb_valid),
         .wb_is_fp(wb_is_fp),
         .wb_preg(wb_preg),

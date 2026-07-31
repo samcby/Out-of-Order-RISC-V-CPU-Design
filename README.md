@@ -65,6 +65,7 @@ lane0 instruction while allowing the packet to redirect.
 - Oldest-ready scheduling
 - ALU, branch, LSU, and CSR/system execution paths
 - Independent second ALU execution and writeback path
+- Two memory issue slots, two AGUs, and two memory completion paths
 - CSR/system instruction serialization for precise side effects
 
 Implemented dual-issue combinations include:
@@ -73,9 +74,11 @@ Implemented dual-issue combinations include:
 - `MEM + ALU`
 - `branch + ALU`
 - `branch + MEM`
+- `MEM + MEM`
 
-The core has one branch unit and one LSU. Therefore `branch + branch` and
-`MEM + MEM` are not supported in the same cycle.
+The core has one branch unit, so `branch + branch` is not supported in the
+same cycle. Two memory operations can issue together; different-bank accesses
+proceed independently while same-bank requests are serialized.
 
 ### ROB, Completion, and Commit
 
@@ -192,44 +195,55 @@ trap behavior as well as ordinary interrupt-driven wakeup.
 The packet backend uses:
 
 ```text
-Reservation station
-    -> memory order queue
-    -> LSU and precise store buffer
-    -> 2-way write-back D-cache
-    -> variable-latency backing memory
+Dual memory reservation-station outputs
+    -> split load queue + store queue
+    -> two AGUs and non-blocking LSU
+    -> two bank-local miss trackers
+    -> 2-bank, 2-way write-back D-cache
+    -> dual-channel variable-latency backing memory
 ```
 
 ### Memory Ordering and LSU
 
-- Multi-entry memory operation queue
-- Oldest-first memory operation selection
-- One active LSU/cache request at a time
-- Address-aware load/store disambiguation
-- Non-aliasing loads may bypass older stores
+- Separate multi-entry load and store histories with dual enqueue and issue
+- Monotonic memory sequence numbers preserve precise age ordering
+- Up to eight outstanding loads and eight precise buffered stores
+- Two memory requests and two completions per cycle when resources permit
+- Address-aware load/store disambiguation with unresolved-store tracking
+- Non-aliasing loads may bypass older stores, including unresolved addresses
 - Byte-granular store-to-load forwarding
 - Youngest overlapping store wins each forwarded byte
 - Loads wait when older stores cover only part of the requested value
+- Late store-address aliases trigger precise replay from the violating load
 - Store address/data capture completes the ROB entry
 - Store memory side effects occur only after ROB commit
 - Wrong-path stores are removed before modifying the cache
 - `fence` and `fence.i` complete only after older instructions retire and all
   buffered or in-flight data-memory operations drain
 
-The current structures provide practical load/store ordering but are not yet a
-fully speculative, high-bandwidth load-store queue.
+Load entries remain observable until retirement so a younger load that passed
+an unresolved older store can be checked when that store address becomes
+known. A violation cannot retire: recovery waits until the load reaches the
+ROB head, restores committed rename state, flushes younger work, and restarts
+fetch at the load PC.
 
 ### D-cache
 
 - Two-way set associative
+- Two independently scheduled banks
 - Four words per cache line by default
 - Valid, dirty, tag, and data arrays
 - Per-set pseudo-LRU replacement
 - Write-back and write-allocate behavior
 - Dirty victim writeback
 - Multi-beat refill and writeback
-- Hit, miss, and writeback counters
+- One bank-local miss tracker per bank
+- Concurrent different-bank hits and misses
+- Deterministic port-0 priority for a same-bank conflict
+- Hit, miss, writeback, and bank-conflict counters
 
-The D-cache is blocking and does not yet contain MSHRs.
+Each bank is non-blocking with respect to the other bank. A bank still handles
+one miss transaction at a time, so multiple same-bank misses serialize.
 
 ## Project Structure
 
@@ -253,9 +267,9 @@ Important RTL modules:
 - `execution_stage.sv`: ALU, branch, LSU, CSR, and completion integration
 - `rob_2w.sv`: two-wide ROB allocation and commit
 - `reg_file_2w.sv`: multi-port physical register file
-- `memory_order_queue.sv`: ordered memory scheduling
-- `lsu.sv`: loads, precise stores, and forwarding
-- `data_cache.sv`: write-back D-cache
+- `load_store_queue.sv`: dual-port memory ordering, age tracking, and replay
+- `lsu.sv`: non-blocking loads, precise stores, forwarding, and dual completion
+- `data_cache.sv`: banked write-back D-cache with bank-local miss tracking
 - `csr_file.sv`: machine CSR, U/M privilege, PMP, and trap state
 
 ## Validation
@@ -283,6 +297,7 @@ It runs three programs in one elaboration and covers:
 - `MEM + ALU`
 - `branch + ALU`
 - `branch + MEM`
+- `MEM + MEM`
 - lane1 writeback and dependent wakeup
 - dual commit
 - lane1 conditional branch, `JAL`, and `JALR`
@@ -293,6 +308,21 @@ It runs three programs in one elaboration and covers:
 Six focused integration smokes that duplicated these scenarios were retired
 after the consolidated suite and quick regression passed. Module-level and
 unique corner-case tests remain available for diagnosis.
+
+### Memory-Parallelism Suite
+
+The `memory_dual` regression adds five focused checks around the new memory
+backend:
+
+- dual LSQ enqueue, age-ordered selection, and unresolved-store masks
+- two outstanding loads and two independent memory completions
+- concurrent different-bank cache hits and misses
+- deterministic same-bank conflict serialization
+- end-to-end `MEM + MEM` issue, completion, and retirement
+- late store/load alias detection followed by precise replay
+
+The original cache, precise-store, RV32I, and mixed-control-flow tests remain
+in the broader `memory` and `full` regressions as compatibility coverage.
 
 ### One-Command Regression
 
@@ -310,6 +340,9 @@ list_regression_suites
 run_regression quick
 run_regression multi_issue
 run_regression memory
+run_regression memory_core
+run_regression memory_dual
+run_regression memory_replay
 run_regression invariants
 run_regression performance
 run_regression stress
@@ -363,12 +396,14 @@ Measured with Vivado Simulator 2019.1:
 | --- | ---: | ---: | ---: |
 | Independent ALU | 1.368 | 0.812 | 1.684x |
 | Dependency chain | 0.481 | 0.473 | 1.019x |
-| Memory plus ALU | 0.286 | 0.243 | 1.175x |
+| Memory plus ALU | 0.543 | 0.452 | 1.200x |
 
 The independent workload demonstrates the available superscalar throughput.
 The dependency chain remains effectively single-issue, as expected from its
 RAW dependency on every instruction. The mixed workload gains from paired
-MEM+ALU issue but remains limited by the single blocking LSU and cache path.
+MEM+ALU issue through the dual-port LSQ and banked data cache. Dedicated memory
+regressions additionally exercise concurrent different-bank accesses,
+same-bank conflict arbitration, forwarding, and memory-order replay.
 
 ## Opening the Project
 
@@ -395,10 +430,13 @@ changes.
 ## Current Limitations
 
 - Maximum width is two instructions
-- One LSU and one branch unit
-- No `MEM + MEM` or `branch + branch` issue
+- One branch unit; no `branch + branch` issue
 - CSR/system operations are serialized
-- Blocking D-cache with no MSHRs
+- Two memory requests require different available cache banks; same-bank
+  conflicts serialize with port-0 priority
+- One active miss per D-cache bank; multiple same-bank misses serialize
+- Memory-order violation recovery conservatively flushes the backend and
+  replays from the offending load rather than selectively reissuing only it
 - `fence.i` has no separate instruction-cache invalidation action because the
   current frontend has no instruction cache
 - No I-cache/D-cache shared bus or memory arbiter
@@ -525,8 +563,8 @@ checks all final GPRs, detects retirement deadlock, and emits
 The default deterministic campaign contains 10,439 static RV32I instructions and
 mixes ALU dependencies, dual-issue opportunities, byte/halfword/word
 load-store traffic, taken and not-taken branches, `jal`, and `jalr`. With the
-default seed it retires 10,282 dynamic instructions in 15,555 active cycles
-(IPC 0.661) with 3,968 dual-retire cycles in Vivado Simulator 2019.1.
+default seed it retires 10,282 dynamic instructions in 12,271 active cycles
+(IPC 0.838) with 4,138 dual-retire cycles in Vivado Simulator 2019.1.
 
 The same 700-block campaign has also passed seeds `0x1892027`, `0x5eed1234`,
 and `0xc0ffee`, bringing the validated multi-seed total to 41,128 dynamic

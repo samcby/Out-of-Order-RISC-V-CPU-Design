@@ -2,7 +2,7 @@
 //
 // Rename can create two ordered instructions in one cycle, but not every pair
 // can safely consume the downstream resources together. This module detects
-// incompatible combinations (for example competing memory/branch resources,
+// incompatible combinations (for example competing branch resources,
 // CSR serialization, and selected same-packet dependencies) and sends lane 0
 // first while retaining lane 1 in a one-entry pending register. It preserves
 // program order and never duplicates a lane across the two output transfers.
@@ -80,14 +80,13 @@ module rat_dis_packet_splitter (
                                   ((in_if.data.lane0.data.rs_entry.datapath.speculation_mask != '0) ||
                                    (in_if.data.lane1.data.rs_entry.datapath.speculation_mask != '0));
 
-    assign duplicate_fu = (lane0_lsu && lane1_lsu) ||
-                          (lane0_branch && lane1_branch) ||
+    assign duplicate_fu = (lane0_branch && lane1_branch) ||
                           alu_pair_raw_dep ||
                           alu_pair_speculative;
 
-    // The ALU RS has two enqueue ports; LSU/branch remain single-enqueue.
-    // Keep CSR/system side effects, dependent ALU pairs, and speculative ALU
-    // pairs serialized until the backend grows full intra-packet forwarding.
+    // ALU and memory queues have two enqueue ports. Keep duplicate branch work,
+    // CSR/system side effects, dependent ALU pairs, and speculative ALU pairs
+    // serialized until those resources gain equivalent parallel semantics.
     assign split_packet = lane0_valid && lane1_valid &&
                           (duplicate_fu || lane0_csr || lane1_csr);
 

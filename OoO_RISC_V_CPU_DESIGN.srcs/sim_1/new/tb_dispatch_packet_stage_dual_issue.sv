@@ -135,6 +135,9 @@ module tb_dispatch_packet_stage_dual_issue;
         lane = '0;
         lane.valid = valid;
         lane.data.rs_entry.control_signal.fu_type = fu_type;
+        if (fu_type == FU_MEM) begin
+            lane.data.rs_entry.control_signal.lsu_control_signal.mem_read = 1'b1;
+        end
         lane.data.rs_entry.control_signal.rename = (rd != '0);
         lane.data.rs_entry.datapath.rob_tag = tag;
         lane.data.rs_entry.datapath.new_des_preg = new_preg;

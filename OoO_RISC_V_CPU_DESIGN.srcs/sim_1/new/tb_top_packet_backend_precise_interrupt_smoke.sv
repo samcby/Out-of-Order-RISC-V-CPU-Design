@@ -62,9 +62,12 @@ module tb_top_packet_backend_precise_interrupt_smoke;
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             load_issue_count <= 0;
-        end else if (dut.u_execution.lsu_req_valid &&
-                     dut.u_execution.lsu_req_ready &&
-                     (dut.u_execution.selected_mem_datapath.pc == LOAD_PC)) begin
+        end else if ((dut.u_execution.lsu_req_valid &&
+                      dut.u_execution.lsu_req_ready &&
+                      (dut.u_execution.selected_mem_datapath.pc == LOAD_PC)) ||
+                     (dut.u_execution.lsu_req1_valid &&
+                      dut.u_execution.lsu_req1_ready &&
+                      (dut.u_execution.selected_mem1_datapath.pc == LOAD_PC))) begin
             load_issue_count <= load_issue_count + 1;
         end
     end

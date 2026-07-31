@@ -27,6 +27,7 @@ module tb_dispatch_packet_logic;
     pip_if #(alu_rs_t) alu_if (.clk(clk), .rst_n(rst_n));
     pip_if #(alu_rs_t) alu1_if (.clk(clk), .rst_n(rst_n));
     pip_if #(lsu_rs_t) lsu_if (.clk(clk), .rst_n(rst_n));
+    pip_if #(lsu_rs_t) lsu1_if (.clk(clk), .rst_n(rst_n));
     pip_if #(branch_rs_t) branch_if (.clk(clk), .rst_n(rst_n));
 
     dispatch_packet_logic dut (
@@ -45,6 +46,7 @@ module tb_dispatch_packet_logic;
         .alu_if(alu_if.producer),
         .alu1_if(alu1_if.producer),
         .lsu_if(lsu_if.producer),
+        .lsu1_if(lsu1_if.producer),
         .branch_if(branch_if.producer)
     );
 
@@ -87,6 +89,7 @@ module tb_dispatch_packet_logic;
         alu_if.ready = 1'b0;
         alu1_if.ready = 1'b0;
         lsu_if.ready = 1'b0;
+        lsu1_if.ready = 1'b0;
         branch_if.ready = 1'b0;
         lane0_src1_ready = 1'b0;
         lane0_src2_ready = 1'b0;
@@ -107,6 +110,7 @@ module tb_dispatch_packet_logic;
         alu_if.ready = 1'b1;
         alu1_if.ready = 1'b1;
         lsu_if.ready = 1'b1;
+        lsu1_if.ready = 1'b1;
         branch_if.ready = 1'b1;
         lane0_src1_ready = 1'b1;
         lane0_src2_ready = 1'b0;
@@ -141,6 +145,17 @@ module tb_dispatch_packet_logic;
                  "first ALU receives lane0");
         check_ok(alu1_if.valid && alu1_if.data.datapath.rob_tag == rob_tag_t'(4),
                  "second ALU receives lane1");
+
+        set_lane(in_if.data.lane0, 1'b1, FU_MEM, rob_tag_t'(13), 1'b0);
+        set_lane(in_if.data.lane1, 1'b1, FU_MEM, rob_tag_t'(14), 1'b0);
+        #1;
+        check_ok(in_if.ready, "MEM+MEM packet dispatches atomically");
+        check_ok(lsu_if.valid &&
+                 lsu_if.data.datapath.rob_tag == rob_tag_t'(13),
+                 "first LSQ input receives lane0 MEM");
+        check_ok(lsu1_if.valid &&
+                 lsu1_if.data.datapath.rob_tag == rob_tag_t'(14),
+                 "second LSQ input receives lane1 MEM");
 
         set_lane(in_if.data.lane0, 1'b1, FU_ALU, rob_tag_t'(9), 1'b0);
         set_lane(in_if.data.lane1, 1'b1, FU_ALU, rob_tag_t'(10), 1'b0);

@@ -25,7 +25,10 @@ Available groups:
 | --- | --- |
 | `quick` | Mainline architecture confidence after ordinary RTL changes |
 | `multi_issue` | Frontend, rename, issue, execution, writeback, and commit |
-| `memory` | Cache, memory ordering, forwarding, and precise stores |
+| `memory` | Full cache, LSQ, forwarding, replay, precise-store, and fault coverage |
+| `memory_core` | Fast module-level cache, LSQ, LSU, and forwarding checks |
+| `memory_dual` | Dual-bank, non-blocking load, `MEM+MEM`, replay, and compatibility |
+| `memory_replay` | Focused end-to-end memory-order violation recovery |
 | `invariants` | RAT, free pool, ROB, store buffer, and retirement consistency assertions |
 | `performance` | Controlled 1-wide versus 2-wide IPC comparison |
 | `stress` | Deterministic long-program retirement and architectural-state checking |
@@ -38,6 +41,13 @@ launch/runtime errors and automatically counts functional FAIL or missing
 banners in the suite summary. The requirement-level evidence and remaining
 gaps are tracked in
 [`VERIFICATION_COVERAGE.md`](VERIFICATION_COVERAGE.md).
+
+For a headless Windows run from the repository root:
+
+```powershell
+& "D:\Vivado\Vivado\2019.1\bin\vivado.bat" -mode batch `
+  -source scripts/run_regression_batch.tcl -tclargs memory_dual
+```
 
 ## Floating-Point Infrastructure
 
@@ -147,6 +157,11 @@ programs separated by reset:
 - execution redirect
 - wrong-path suppression
 
+`MEM + MEM` is covered by the focused
+`tb_top_packet_backend_mem_mem_dual_issue_smoke`, because its two-bank cache
+traffic and two memory completions require additional observability beyond the
+original three-scenario consolidated test.
+
 ## Suite Contents
 
 ### Quick
@@ -200,6 +215,7 @@ tb_dispatch_packet_stage_dual_issue
 tb_reg_file_2w
 tb_rob_2w
 tb_top_packet_backend_multi_issue_suite
+tb_top_packet_backend_mem_mem_dual_issue_smoke
 tb_top_packet_backend_lane1_squash_smoke
 tb_top_packet_backend_25test
 ```
@@ -208,8 +224,13 @@ tb_top_packet_backend_25test
 
 ```text
 tb_data_cache_smoke
+tb_data_cache_dual_bank
 tb_memory_order_queue
+tb_load_store_queue
 tb_lsu_commit_store
+tb_lsu_nonblocking_2p
+tb_top_packet_backend_mem_mem_dual_issue_smoke
+tb_top_packet_backend_memory_replay_smoke
 tb_top_packet_backend_multi_issue_suite
 tb_top_packet_backend_rv32i_smoke
 tb_top_misaligned_smoke
@@ -257,7 +278,7 @@ Current validated results:
 ```text
 independent_alu:  1.368 IPC vs 0.812 IPC, 1.684x speedup
 dependency_chain: 0.481 IPC vs 0.473 IPC, 1.019x speedup
-memory_plus_alu:  0.286 IPC vs 0.243 IPC, 1.175x speedup
+memory_plus_alu:  0.543 IPC vs 0.452 IPC, 1.200x speedup
 ```
 
 ### Stress
@@ -274,8 +295,8 @@ detects retirement deadlock, compares all integer registers, and writes a
 local retirement CSV for diagnosis.
 
 The checked-in default seed currently executes 10,282 dynamic instructions
-from a 10,439-instruction image. It completes in 15,555 active cycles at
-0.661 IPC, including 3,968 dual-retire cycles. Three additional 10K-class
+from a 10,439-instruction image. It completes in 12,271 active cycles at
+0.838 IPC, including 4,138 dual-retire cycles. Three additional 10K-class
 seeds have also passed the same retirement and final-state checks.
 
 ### Full
