@@ -92,7 +92,6 @@ module fp_rat_2w #(
         if (!rst_n) begin
             for (int i = 0; i < FP_AREG_NUM; i++) begin
                 rat[i] <= fp_preg_t'(i);
-                committed_rat[i] <= fp_preg_t'(i);
                 for (int cp = 0; cp < CHECKPOINT_NUM; cp++) begin
                     checkpoints[cp][i] <= fp_preg_t'(i);
                 end
@@ -122,7 +121,14 @@ module fp_rat_2w #(
             if (write_en[1]) rat[lane1_dest] <= lane1_new_preg;
         end
 
-        if (rst_n) begin
+    end
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (int i = 0; i < FP_AREG_NUM; i++) begin
+                committed_rat[i] <= fp_preg_t'(i);
+            end
+        end else begin
             if (retire_valid[0] === 1'b1) begin
                 committed_rat[retire_areg0] <= retire_new_preg0;
             end

@@ -342,10 +342,12 @@ module data_cache #(
                 for (int w = 0; w < WAY_COUNT; w++) begin
                     line_valid[s][w] <= 1'b0;
                     line_dirty[s][w] <= 1'b0;
+`ifndef SYNTHESIS
                     line_tag[s][w] <= '0;
                     for (int o = 0; o < WORDS_PER_LINE; o++) begin
                         line_data[s][w][o] <= '0;
                     end
+`endif
                 end
             end
         end else begin

@@ -563,20 +563,16 @@ module lsu #(
     assign req1_is_load = (control_signal1.mem_read === 1'b1);
     assign req1_is_store = (control_signal1.mem_write === 1'b1);
 
+    // Admission is deliberately independent of the presented request type.
+    // Data-dependent ready fed the selected issue payload back into the issue
+    // decision and created a combinational loop after synthesis. Reserving
+    // capacity for either operation class is conservative only near a full
+    // queue and gives the execution boundary a strict ready/valid contract.
     assign req_ready =
-        !flush &&
-        (req0_is_load ? load_free0_valid :
-         req0_is_store ? store_free0_valid :
-         (load_free0_valid || store_free0_valid));
+        !flush && load_free0_valid && store_free0_valid;
     assign req0_fire = req_valid && req_ready;
     assign req1_ready =
-        !flush &&
-        ((req1_is_load &&
-          ((req0_fire && req0_is_load) ?
-           load_free1_valid : load_free0_valid)) ||
-         (req1_is_store &&
-          ((req0_fire && req0_is_store) ?
-           store_free1_valid : store_free0_valid)));
+        !flush && load_free1_valid && store_free1_valid;
     assign req1_fire = req1_valid_safe && req1_ready;
     assign req0_squashed_now =
         squash_en &&

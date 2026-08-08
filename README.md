@@ -251,6 +251,7 @@ one miss transaction at a time, so multiple same-bank misses serialize.
 OoO_RISC_V_CPU_DESIGN.srcs/sources_1/new   RTL
 OoO_RISC_V_CPU_DESIGN.srcs/sim_1/new       testbenches
 scripts                                    regression helpers
+asic                                       synthesis/STA manifests and scripts
 OoO_RISC_V_CPU_DESIGN.xpr                  Vivado project
 REGRESSION.md                              detailed regression guide
 ```
@@ -404,6 +405,30 @@ RAW dependency on every instruction. The mixed workload gains from paired
 MEM+ALU issue through the dual-port LSQ and banked data cache. Dedicated memory
 regressions additionally exercise concurrent different-bank accesses,
 same-bank conflict arbitration, forwarding, and memory-order replay.
+
+## ASIC Synthesis Baseline
+
+The repository includes a production RTL manifest, shared 5 ns SDC, Synopsys
+Design Compiler synthesis script, PrimeTime STA script, and technology setup
+template under `asic/`. The same manifest is checked for Xilinx primitives,
+XPMs, simulation libraries, and FPGA-only mapping attributes:
+
+```powershell
+python scripts/check_asic_portability.py
+```
+
+A Vivado 2019.1 out-of-context synthesis run is retained as a structural proxy
+until a standard-cell and SRAM library is supplied. The proxy maps the complete
+43-file `top_packet_backend` closure with zero combinational loops and zero
+unclocked register/latch pins. It does not meet the provisional 5 ns target and
+does not infer BRAM because the large multi-ported arrays remain behavioral.
+Those resource and timing numbers are therefore diagnostics, not ASIC area,
+frequency, or power claims.
+
+See [`asic/README.md`](asic/README.md) for the commands, measured proxy
+baseline, synthesis semantics, limitations, and the path to a foundry-backed
+flow. Generated checkpoints, netlists, and reports are intentionally excluded
+from version control.
 
 ## Opening the Project
 

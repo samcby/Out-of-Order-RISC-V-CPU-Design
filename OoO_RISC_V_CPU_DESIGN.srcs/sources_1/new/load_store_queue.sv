@@ -187,29 +187,33 @@ module load_store_queue #(
         end
     end
 
-    assign in0_is_load = in0_if.valid &&
-                         in0_if.data.control_signal.mem_read;
-    assign in0_is_store = in0_if.valid &&
-                          in0_if.data.control_signal.mem_write;
-    assign in1_is_load = in1_if.valid &&
-                         in1_if.data.control_signal.mem_read;
-    assign in1_is_store = in1_if.valid &&
-                          in1_if.data.control_signal.mem_write;
+    // Capacity is an upstream promise and must not depend on valid. Dispatch
+    // presents the candidate payload before asserting valid, so classifying
+    // that payload here breaks the ready/valid feedback path while preserving
+    // atomic two-lane admission.
+    assign in0_is_load =
+        (in0_if.data.control_signal.mem_read === 1'b1);
+    assign in0_is_store =
+        (in0_if.data.control_signal.mem_write === 1'b1);
+    assign in1_is_load =
+        (in1_if.data.control_signal.mem_read === 1'b1);
+    assign in1_is_store =
+        (in1_if.data.control_signal.mem_write === 1'b1);
     assign pair_needs_two_loads = in0_is_load && in1_is_load;
     assign pair_needs_two_stores = in0_is_store && in1_is_store;
 
     assign in0_capacity =
-        (!in0_if.valid) ||
-        (in0_is_load &&
-         (pair_needs_two_loads ? load_free1_valid : load_free0_valid)) ||
-        (in0_is_store &&
-         (pair_needs_two_stores ? store_free1_valid : store_free0_valid));
+        in0_is_load ?
+            (pair_needs_two_loads ? load_free1_valid : load_free0_valid) :
+        in0_is_store ?
+            (pair_needs_two_stores ? store_free1_valid : store_free0_valid) :
+            1'b1;
     assign in1_capacity =
-        (!in1_if.valid) ||
-        (in1_is_load &&
-         (pair_needs_two_loads ? load_free1_valid : load_free0_valid)) ||
-        (in1_is_store &&
-         (pair_needs_two_stores ? store_free1_valid : store_free0_valid));
+        in1_is_load ?
+            (pair_needs_two_loads ? load_free1_valid : load_free0_valid) :
+        in1_is_store ?
+            (pair_needs_two_stores ? store_free1_valid : store_free0_valid) :
+            1'b1;
 
     // Packet lanes share one acceptance decision. Both ready signals therefore
     // make the same atomic capacity promise to dispatch.
@@ -341,20 +345,21 @@ module load_store_queue #(
         replay_pc = '0;
         replay_speculation_mask = '0;
         replay_seq = '0;
-        if (!flush) begin
-            for (int l = 0; l < LOAD_DEPTH; l++) begin
-                if (load_valid[l] && load_issued[l] &&
-                    (load_violation[l] || load_violation_now[l]) &&
-                    (!replay_valid ||
-                     seq_older(load_entry[l].datapath.mem_seq,
-                               replay_seq))) begin
-                    replay_valid = 1'b1;
-                    replay_tag = load_entry[l].datapath.rob_tag;
-                    replay_pc = load_entry[l].datapath.pc;
-                    replay_speculation_mask =
-                        load_entry[l].datapath.speculation_mask;
-                    replay_seq = load_entry[l].datapath.mem_seq;
-                end
+        // Keep raw detection independent of global flush. The top level
+        // registers a replay before it may drive flush; feeding flush back
+        // here would create a zero-delay replay/retirement recovery loop.
+        for (int l = 0; l < LOAD_DEPTH; l++) begin
+            if (load_valid[l] && load_issued[l] &&
+                (load_violation[l] || load_violation_now[l]) &&
+                (!replay_valid ||
+                 seq_older(load_entry[l].datapath.mem_seq,
+                           replay_seq))) begin
+                replay_valid = 1'b1;
+                replay_tag = load_entry[l].datapath.rob_tag;
+                replay_pc = load_entry[l].datapath.pc;
+                replay_speculation_mask =
+                    load_entry[l].datapath.speculation_mask;
+                replay_seq = load_entry[l].datapath.mem_seq;
             end
         end
     end
@@ -596,8 +601,6 @@ module load_store_queue #(
         if (in0_if.rst_n) begin
             assert (!(out1_if.valid && !out0_if.valid))
                 else $error("LSQ: slot1 issued without slot0");
-            assert (!(replay_valid && flush))
-                else $error("LSQ: replay remained asserted during full flush");
         end
     end
 `endif

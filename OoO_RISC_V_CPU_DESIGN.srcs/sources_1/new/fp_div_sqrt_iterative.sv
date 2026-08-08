@@ -90,7 +90,11 @@ module fp_div_sqrt_iterative #(
     // tag/preg/speculation metadata in entry_q makes cancellation independent
     // of whatever operands are presented by later issue attempts.
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n || flush) begin
+        if (!rst_n) begin
+            entry_q <= '0;
+            out_valid_q <= 1'b0;
+            cycles_left_q <= 0;
+        end else if (flush) begin
             entry_q <= '0;
             out_valid_q <= 1'b0;
             cycles_left_q <= 0;

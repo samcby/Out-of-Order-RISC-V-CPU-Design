@@ -640,7 +640,12 @@ module top_packet_backend #(
     end
 
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n || architectural_flush) begin
+        if (!rst_n) begin
+            active_checkpoint_mask_q <= '0;
+            for (int i = 0; i < CHECKPOINT_NUM; i++) begin
+                checkpoint_dep_mask_q[i] <= '0;
+            end
+        end else if (architectural_flush) begin
             active_checkpoint_mask_q <= '0;
             for (int i = 0; i < CHECKPOINT_NUM; i++) begin
                 checkpoint_dep_mask_q[i] <= '0;
@@ -664,8 +669,13 @@ module top_packet_backend #(
     end
 
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n || memory_replay_take || trap_commit ||
-            interrupt_take || mret_flush_exe) begin
+        if (!rst_n) begin
+            memory_replay_pending_q <= 1'b0;
+            memory_replay_tag_q <= '0;
+            memory_replay_pc_q <= '0;
+            memory_replay_speculation_mask_q <= '0;
+        end else if (memory_replay_take || trap_commit ||
+                     interrupt_take || mret_flush_exe) begin
             memory_replay_pending_q <= 1'b0;
             memory_replay_tag_q <= '0;
             memory_replay_pc_q <= '0;

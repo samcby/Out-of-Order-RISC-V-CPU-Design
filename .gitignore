@@ -41,5 +41,10 @@ Desktop.ini
 # External random-verification build products
 out/
 
+# Generated ASIC synthesis and STA products
+asic/build/
+asic/reports/
+asic_baseline_console.txt
+
 # Locally built SoftFloat reference-vector generator
 scripts/softfloat/*.exe

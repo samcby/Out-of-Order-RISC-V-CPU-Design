@@ -285,22 +285,19 @@ module execution_stage #(
                                         (branch_target[1:0] != 2'b00);
     assign branch_issue_now = branch_fu_fire && !branch_addr_misaligned_now;
     assign issue0_fp_disabled_candidate =
-        in_if.valid &&
         (csr_mstatus_value[14:13] == 2'b00) &&
         instruction_uses_fp_state(in_if.data.datapath.instr);
     assign issue1_fp_disabled_candidate =
-        in1_if.valid &&
         (csr_mstatus_value[14:13] == 2'b00) &&
         instruction_uses_fp_state(in1_if.data.datapath.instr);
     assign issue0_fp_disabled_fire =
-        issue0_fp_disabled_candidate && in_if.ready;
+        in_if.valid && issue0_fp_disabled_candidate && in_if.ready;
     assign issue1_fp_disabled_fire =
-        issue1_fp_disabled_candidate && in1_if.ready;
+        in1_if.valid && issue1_fp_disabled_candidate && in1_if.ready;
     // Classify FP work before assigning ready. Simple FP operations remain on
     // the scalar ALU path; these candidates are the operations that must enter
     // a fixed-latency FP pipe and therefore carry result metadata internally.
     assign issue0_fp_candidate =
-        in_if.valid &&
         !issue0_fp_disabled_candidate &&
         (in_if.data.fu_sel == FU_ALU) &&
         in_if.data.control_signal.alu.fp_en &&
@@ -316,7 +313,6 @@ module execution_stage #(
          (in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_NMSUB) ||
          (in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_NMADD));
     assign issue1_fp_candidate =
-        in1_if.valid &&
         !issue1_fp_disabled_candidate &&
         (in1_if.data.fu_sel == FU_ALU) &&
         in1_if.data.control_signal.alu.fp_en &&
@@ -332,21 +328,18 @@ module execution_stage #(
          (in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_NMSUB) ||
          (in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_NMADD));
     assign issue0_fp_long_candidate =
-        in_if.valid &&
         !issue0_fp_disabled_candidate &&
         (in_if.data.fu_sel == FU_ALU) &&
         in_if.data.control_signal.alu.fp_en &&
         ((in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_DIV) ||
          (in_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_SQRT));
     assign issue1_fp_long_candidate =
-        in1_if.valid &&
         !issue1_fp_disabled_candidate &&
         (in1_if.data.fu_sel == FU_ALU) &&
         in1_if.data.control_signal.alu.fp_en &&
         ((in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_DIV) ||
          (in1_if.data.control_signal.alu.fp_op == fp_defines_pkg::FP_OP_SQRT));
     assign issue1_alu_candidate =
-        in1_if.valid &&
         !issue1_fp_disabled_candidate &&
         (in1_if.data.fu_sel == FU_ALU) &&
         !in1_if.data.control_signal.alu.csr_en &&
@@ -354,16 +347,14 @@ module execution_stage #(
         !issue1_fp_candidate &&
         !issue1_fp_long_candidate;
     assign issue1_mem_candidate =
-        in1_if.valid &&
         !issue1_fp_disabled_candidate &&
         (in1_if.data.fu_sel == FU_MEM);
     assign issue0_mem_candidate =
-        in_if.valid &&
         !issue0_fp_disabled_candidate &&
         (in_if.data.fu_sel == FU_MEM);
     assign in1_if.ready =
-        !in1_if.valid ||
-        (!interrupt_take &&
+        in_if.ready &&
+        !interrupt_take &&
          (issue1_fp_disabled_candidate ?
               (!fp1_out_valid && !lsu_resp1_valid) :
           issue1_fp_long_candidate ?
@@ -372,11 +363,12 @@ module execution_stage #(
               fp1_in_ready :
               (!fp1_out_valid &&
                !lsu_resp1_valid &&
-               (issue1_alu_candidate ||
+               ((in1_if.data.fu_sel == FU_NOP) ||
+                issue1_alu_candidate ||
                 (issue1_mem_candidate &&
                  (mem1_addr_misaligned_candidate ||
                   mem1_access_fault_candidate ||
-                  lsu_req1_ready))))));
+                  lsu_req1_ready)))));
     assign issue1_alu_fire = in1_if.valid && in1_if.ready && issue1_alu_candidate;
     assign issue1_mem_fire = in1_if.valid && in1_if.ready && issue1_mem_candidate;
     assign issue0_mem_fire = in_if.valid && in_if.ready && issue0_mem_candidate;
@@ -747,7 +739,8 @@ module execution_stage #(
     assign fp0_out_ready = !lsu_resp_valid;
     assign fp1_out_ready = !lsu_resp1_valid;
     assign fp_long_select_lane1 =
-        !issue0_fp_long_candidate && issue1_fp_long_candidate;
+        !(in_if.valid && issue0_fp_long_candidate) &&
+        in1_if.valid && issue1_fp_long_candidate;
     assign fp_long_control =
         fp_long_select_lane1 ? in1_if.data.control_signal.alu :
                                in_if.data.control_signal.alu;
@@ -756,14 +749,12 @@ module execution_stage #(
                                in_if.data.datapath;
     assign fp_long_out_ready = !lsu_resp_valid && !fp0_out_valid;
     assign fence_candidate =
-        in_if.valid &&
         (in_if.data.fu_sel == FU_ALU) &&
         in_if.data.control_signal.alu.sys_en &&
         (in_if.data.control_signal.alu.sys_op == SYS_FENCE);
     assign memory_quiescent = lsu_idle;
     assign in_if.ready =
-        !in_if.valid ||
-        (issue0_fp_disabled_candidate ?
+        issue0_fp_disabled_candidate ?
              (!fp0_out_valid &&
               !fp_long_out_valid &&
               !lsu_resp_valid) :
@@ -778,7 +769,7 @@ module execution_stage #(
               ((in_if.data.fu_sel != FU_MEM) ||
                mem_addr_misaligned_candidate ||
                mem_access_fault_candidate ||
-               lsu_req_ready)));
+               lsu_req_ready));
 
     alu u_alu (
         .control_signal(in_if.data.control_signal.alu),
@@ -807,7 +798,8 @@ module execution_stage #(
         .squash_checkpoint_id (resolve_cp_id_now),
         .resolve_en           (resolve_now),
         .resolve_checkpoint_id(resolve_cp_id_now),
-        .in_valid             (issue0_fp_candidate && !interrupt_take),
+        .in_valid             (in_if.valid && issue0_fp_candidate &&
+                               !interrupt_take),
         .in_ready             (fp0_in_ready),
         .in_control           (in_if.data.control_signal.alu),
         .in_datapath          (in_if.data.datapath),
@@ -833,7 +825,8 @@ module execution_stage #(
         .squash_checkpoint_id (resolve_cp_id_now),
         .resolve_en           (resolve_now),
         .resolve_checkpoint_id(resolve_cp_id_now),
-        .in_valid             (issue1_fp_candidate && !interrupt_take),
+        .in_valid             (in1_if.valid && issue1_fp_candidate &&
+                               !interrupt_take),
         .in_ready             (fp1_in_ready),
         .in_control           (in1_if.data.control_signal.alu),
         .in_datapath          (in1_if.data.datapath),
@@ -860,8 +853,8 @@ module execution_stage #(
         .squash_checkpoint_id (resolve_cp_id_now),
         .resolve_en           (resolve_now),
         .resolve_checkpoint_id(resolve_cp_id_now),
-        .in_valid             ((issue0_fp_long_candidate ||
-                                issue1_fp_long_candidate) &&
+        .in_valid             (((in_if.valid && issue0_fp_long_candidate) ||
+                                (in1_if.valid && issue1_fp_long_candidate)) &&
                                !interrupt_take),
         .in_ready             (fp_long_in_ready),
         .in_control           (fp_long_control),

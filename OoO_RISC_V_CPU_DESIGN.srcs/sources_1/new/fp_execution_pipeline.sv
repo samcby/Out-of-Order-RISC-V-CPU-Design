@@ -154,7 +154,12 @@ module fp_execution_pipeline #(
     // metadata. Squash still takes effect while stalled so a wrong-path result
     // cannot emerge merely because the consumer is backpressuring the pipe.
     always_ff @(posedge clk or negedge rst_n) begin
-        if (!rst_n || flush) begin
+        if (!rst_n) begin
+            for (int stage_idx = 0; stage_idx < LATENCY; stage_idx++) begin
+                valid_q[stage_idx] <= 1'b0;
+                entry_q[stage_idx] <= '0;
+            end
+        end else if (flush) begin
             for (int stage_idx = 0; stage_idx < LATENCY; stage_idx++) begin
                 valid_q[stage_idx] <= 1'b0;
                 entry_q[stage_idx] <= '0;

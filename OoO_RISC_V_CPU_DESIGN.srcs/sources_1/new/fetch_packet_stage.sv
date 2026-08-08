@@ -47,7 +47,7 @@ module fetch_packet_stage #(
     localparam int JALR_ENTRIES = 32;
     localparam int JALR_W = $clog2(JALR_ENTRIES);
 
-    (* ram_style = "block" *) logic [31:0] mem [0:WORDS-1];
+    logic [31:0] mem [0:WORDS-1];
 
     logic start_q;
     logic redirect_hold_q;
@@ -320,9 +320,11 @@ module fetch_packet_stage #(
             pred_redirect_target_q <= '0;
             jalr_wait_q <= 1'b0;
             pc_q    <= '0;
+`ifndef SYNTHESIS
             for (int i = 0; i < WORDS; i++) begin
                 mem[i] <= '0;
             end
+`endif
             for (int i = 0; i < BHT_ENTRIES; i++) begin
                 bht[i] <= 2'b01;
             end

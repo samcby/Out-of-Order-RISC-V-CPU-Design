@@ -6,7 +6,8 @@
 // queue into ordered execution slots. It prefers legal useful pairings such as
 // ALU+ALU, ALU+memory, or branch+ALU while respecting single shared resources.
 // CSR/system work is constrained to slot 0 so it cannot race with a peer side
-// effect. Slot 1 valid is meaningful only when slot 0 also transfers.
+// effect. Slot 1 keeps valid independent of downstream ready; execution gates
+// its ready with slot 0 so the younger instruction still cannot transfer first.
 //
 // The arbiter is combinational: queue entries are removed only on the matching
 // valid && ready handshake at the execution-stage input.
@@ -176,7 +177,11 @@ module issue_packet_arbiter #(
     end
 
     always_comb begin
-        issue1_if.valid = slot1_valid && (!slot0_valid || issue0_if.ready);
+        // A producer must not derive valid from ready. The previous lane-0
+        // ready qualification formed a combinational loop through LSU
+        // backpressure. Atomic ordering is enforced by the execution-stage
+        // lane-1 ready gate and by the source-ready equations above.
+        issue1_if.valid = slot1_valid;
         issue1_if.data  = '0;
         issue1_if.data.fu_sel = issue1_fu_sel;
 

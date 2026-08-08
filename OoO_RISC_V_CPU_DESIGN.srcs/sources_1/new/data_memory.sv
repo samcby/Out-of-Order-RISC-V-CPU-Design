@@ -96,9 +96,11 @@ module data_memory #(
             pending1_wmask_q <= '0;
             pending1_wdata_q <= '0;
 
+`ifndef SYNTHESIS
             for (int i = 0; i < MEM_WORDS; i++) begin
                 mem[i] <= '0;
             end
+`endif
         end else begin
             resp_valid <= 1'b0;
             resp_rdata <= '0;

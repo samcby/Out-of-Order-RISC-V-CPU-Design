@@ -51,7 +51,9 @@ module reg_file_2w (
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
             for (int i = 0; i < PREG_NUM; i++) begin
+`ifndef SYNTHESIS
                 regs[i] <= '0;
+`endif
                 ready_bits[i] <= 1'b1;
             end
         end else begin

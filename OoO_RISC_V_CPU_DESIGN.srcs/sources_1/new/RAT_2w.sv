@@ -84,7 +84,6 @@ module reg_alias_table_2w (
         if (!rst_n) begin
             for (int i = 0; i < AREG_NUM; i++) begin
                 rat[i] <= preg_t'(i);
-                committed_rat[i] <= preg_t'(i);
                 for (int j = 0; j < CHECKPOINT_NUM; j++) begin
                     checkpoints[j][i] <= preg_t'(i);
                 end
@@ -119,7 +118,14 @@ module reg_alias_table_2w (
             end
         end
 
-        if (rst_n) begin
+    end
+
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            for (int i = 0; i < AREG_NUM; i++) begin
+                committed_rat[i] <= preg_t'(i);
+            end
+        end else begin
             if ((retire_valid[0] === 1'b1) && (retire_areg0 != '0)) begin
                 committed_rat[retire_areg0] <= retire_new_preg0;
             end

@@ -23,7 +23,7 @@ module icache #(
     localparam int WORDS = DEPTH_BYTES / 4;
     localparam int WORD_AW = $clog2(WORDS);
 
-    (* ram_style = "block" *) logic [31:0] mem [0:WORDS-1];
+    logic [31:0] mem [0:WORDS-1];
 
     logic [WORD_AW-1:0] load_word_idx;
     logic [1:0]         load_byte_off;
